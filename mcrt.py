@@ -35,7 +35,7 @@ class Atmosphere( object ):
     """Contains atmospheric properties and methods for calculating RT."""
     def __init__( self, altitudes, angles, temperatures, neutrals_dict, oplus_density, viewing_angles ):
         # coordinates
-        self.z   = altitudes * 1e-5
+        self.z   = altitudes * 1e5 # km -> cm
         self.mu  = np.cos( angles )
 
         self.N_angles = len(angles)
@@ -51,7 +51,7 @@ class Atmosphere( object ):
         self.dz = self.z[:-1] - self.z[1:]
 
         # optical depths -- each of these is a list with an array for each wavelength
-        self.albedo = [ self.oplus * self.dz *  np.fromiter(( sigma(T) for T in self.temperatures ), dtype=dt ) for sigma in Gas.species["O+"].sigma ]
+        self.albedo = [ self.oplus * self.dz * np.fromiter(( sigma(T) for T in self.temperatures ), dtype=dt ) for sigma in Gas.species["O+"].sigma ]
         dtau_abs = [ sum( self.neutrals[ gas.name ] * gas.sigma[w](None) * self.dz for gas in Gas.absorbers.values() ) for w in xrange(3) ]
         self.dtau = [ self.albedo[w] + dtau_abs[w] for w in xrange(3) ]
         self.tau = [ np.array( [0.0] + [ t for t in np.cumsum( dtau ) ] ) for dtau in self.dtau ]
@@ -59,6 +59,10 @@ class Atmosphere( object ):
         # states for easy indexing later
         self.transient = [ ( i, n ) for i in xrange(self.N_angles) for n in xrange(self.N_layers) ]
         self.ergodic   = range( len( viewing_angles ) )
+
+    @property
+    def Mm(self, wavelength):
+        return self.multiple_scatter_matrix( self, wavelength, viewing=False )
 
     def multiple_scatter_matrix( self, wavelength, viewing=True ):
         """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
@@ -101,9 +105,9 @@ class Atmosphere( object ):
         # downwelling
         elif n < m: 
             if np.sign( mu_i ) == +1: return 0
+            mu = -mu_i
             tau_m   = self.tau[w][m]
             tau_np1 = self.tau[w][n+1]
-            mu = -mu_i
             return mu / dtau_n * ( 1 - np.exp( - dtau_n / mu ) ) * \
                    np.exp( -( tau_m - tau_np1 ) / mu ) * \
                    ( 1 - np.exp( - dtau_m / mu ) )
@@ -122,7 +126,8 @@ class Atmosphere( object ):
         return 1 / 4 / np.pi
 
     def R( self, l, e, wavelength ):
-        """Transisition probability from transient state `l` -> ergodic state `e`"""
+        """Transisition probability from transient state `l` -> ergodic state `e`.
+        This is the viewing matrix."""
         w = wavelength
         j = l[0]
         n = l[1]
