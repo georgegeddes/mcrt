@@ -51,7 +51,8 @@ class Atmosphere( object ):
         self.dz = self.z[:-1] - self.z[1:]
 
         # optical depths -- each of these is a list with an array for each wavelength
-        self.albedo = [ self.oplus * self.dz * np.fromiter(( sigma(T) for T in self.temperatures ), dtype=dt ) for sigma in Gas.species["O+"].sigma ]
+        scatter_depth = [ self.oplus * self.dz * np.fromiter(( sigma(T) for T in self.temperatures ), dtype=dt ) for sigma in Gas.species["O+"].sigma ]
+        self.albedo = [ sd + np.exp( - sd ) - 1 for sd in scatter_depth ]
         dtau_abs = [ sum( self.neutrals[ gas.name ] * gas.sigma[w](None) * self.dz for gas in Gas.absorbers.values() ) for w in xrange(3) ]
         self.dtau = [ self.albedo[w] + dtau_abs[w] for w in xrange(3) ]
         self.tau = [ np.array( [0.0] + [ t for t in np.cumsum( dtau ) ] ) for dtau in self.dtau ]
