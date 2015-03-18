@@ -10,7 +10,7 @@ class Gas( object ):
     species = {}
     absorbers = {}
     scatterers = {}
-    def __init__(self, name, role, wavelengths, cross_sections ):
+    def __init__(self, name, role, wavelengths, cross_sections, mass ):
         """
         `role`           = 'absorption' or 'scattering'
         `wavelengths`    = wavelengths corresponding to `cross_sections`
@@ -19,6 +19,7 @@ class Gas( object ):
         self.name = name
         self.role = role
         self.wavelengths = wavelengths
+        self.mass = mass
         if role == 'absorption':
             # self.sigma = [ ( lambda T: s ) for s in cross_sections ]
             self.sigma = cross_sections
@@ -38,6 +39,7 @@ class Atmosphere( object ):
         # coordinates
         self.z   = altitudes * 1e5 # km -> cm
         self.mu  = np.cos( angles )
+        self.mu_e = -np.cos( viewing_angles )
 
         self.N_angles = len(angles)
         self.N_layers = len(altitudes)
@@ -76,8 +78,8 @@ class Atmosphere( object ):
             self.tau.append( tau ) 
             
             dtau = np.zeros_like( tau )
-            dtau[:-1] = tau[1:] - tau[:-1]
-            dtau[-1] = dtau[-2]
+            dtau[1:] = tau[1:] - tau[:-1]
+            dtau[0] = 2*dtau[1]-dtau[2]
             self.dtau.append( dtau )
             
             alb = np.zeros_like( tau )
@@ -88,6 +90,9 @@ class Atmosphere( object ):
         self.transient = [ ( i, n ) for i in xrange(self.N_angles) for n in xrange(self.N_layers) ]
         self.ergodic   = range( len( viewing_angles ) )
 
+        # convenience definitions
+        self.tau_0 = np.max(self.tau)
+
     @property
     def Mm( self, wavelength ):
         return self.multiple_scatter_matrix( self, wavelength, viewing=False )
@@ -96,16 +101,20 @@ class Atmosphere( object ):
         """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
         n = len(self.transient)
         r = len(self.ergodic  )
+        I = np.eye( n )
         Q = np.fromiter( ( self.Q( k, l, wavelength ) for k in self.transient for l in self.transient ), dtype=dt )
         Q = Q.reshape( ( n, n ) )
-        Mm = np.linalg.inv( np.eye( n ) -  Q )
 
-        if not viewing: return Mm
+        if not viewing: 
+            return np.linalg.inv( I -  Q ) # multiple scattering matrix, slow to calculate
 
         R = np.fromiter( ( self.R( l, e, wavelength ) for l in self.transient for e in self.ergodic ), dtype=dt ) 
         R = R.reshape( ( n, r ) )
 
-        return Mm.dot( R )
+        # ( I - Q ) X = R
+        X = np.linalg.solve( I - Q, R )
+
+        return X
 
     def Q( self, k, l, wavelength ):
         """Transition probability for transient state `k` -> transient state `l`"""
@@ -148,12 +157,12 @@ class Atmosphere( object ):
 
     def Ms( self, i, j, n, wavelength ):
         """Scattering probability for `i` -> `j` in layer `n`"""
-        weight = 1 # ONLY FOR TWO-STREAM
-        return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] ) * weight / 2
+        return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] )
 
     def P( self, mu_i, mu_j ):
         """Phase function"""
-        return 1 / 2 # 1 / 4 / np.pi
+        weight = 1 # ONLY FOR TWO-STREAM
+        return 1 / 2 * weight / 2 # 1 / 4 / np.pi
 
     def R( self, l, e, wavelength ):
         """Transisition probability from transient state `l` -> ergodic state `e`.
@@ -161,17 +170,37 @@ class Atmosphere( object ):
         w = wavelength
         j = l[0]
         n = l[1]
-        pass 
+        mu_j = self.mu[j]
+        mu_e = self.mu_e[e]
+        tau = self.tau[w][n]
+        dtau = self.dtau[w][n]
+        ind = np.arange(n+1) # layers with optical depth <= tau
+        tau_prime = self.tau[w][ ind ] 
+        albedo = self.albedo[w][ ind ]
+        # upwelling
+        if np.sign(mu_j) == +1:
+            return scipy.integrate.quad( lambda t: self.T1( mu_j, mu_e, tau + t, tau_prime, albedo ), 0, dtau )[0] / dtau
+        # downwelling
+        elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
+            tau_np1 = self.tau[w][n+1]
+            return scipy.integrate.quad( lambda t: self.R1(-mu_j, mu_e, self.tau_0 - tau_np1 + t, tau_prime, albedo ) * \
+                                            np.exp( - (tau + 1 - t ) / mu_e ), 0, dtau )[0] / dtau
+        else: 
+            return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
-    def R1( self, j, e, tau ):
+    def R1( self, mu_j, mu_e, tau, tau_prime, albedo ):
         """Probability for diffuse reflection after one scattering"""
-        pass
+        # http://www.light-measurement.com/reflection-absorption/
+        w0 = albedo
+        integrand = np.exp( -tau_prime * ( 1 / mu_j + 1 / mu_e ) ) * w0 * self.P( mu_j, mu_e )
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
 
-    def T1( self, j, e, tau ):
+    def T1( self, mu_j, mu_e, tau, tau_prime, albedo ):
         """Probability for diffuse transmission after one scattering"""
-        pass
+        w0 = albedo
+        integrand = np.exp( -tau_prime / mu_j ) * w0 * self.P( mu_j, mu_e ) * np.exp( -( tau - tau_prime ) / mu_e )
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
 
-
-
-
-
+#### TO DO:
+#### WEIGHTS WILL BE WRONG FOR ERGODIC STATES
+#### Information about angles and such does not need to be included in __init__(). They should be arguments to multiple_scatter_matrix
