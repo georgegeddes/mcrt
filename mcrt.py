@@ -1,8 +1,41 @@
 from __future__ import division
 import numpy as np
-import scipy.integrate
+import scipy.integrate, scipy.special
+
+quad = np.vectorize(scipy.integrate.quad)
 
 dt = np.float
+
+# Boltzmann's constant
+kB = 1.3806488e-23 # J / K
+
+# speed of light
+c = 2.99792458e8 # m / s
+
+def freq_param( num_freqs=24 ):
+    """Frequency parameter x = ( nu - nu_0 ) / nu_0"""
+    # the 1e-6 padding is to prevent division errors in the extinction coefficients
+    return np.array( [ 2.25 * (i + 1e-6) / num_freqs for i in xrange(num_freqs-1) ] + [ np.inf ], dtype=dt ).reshape( 1, num_freqs )
+
+def frequency( wavelength ):
+    """Changes wavelength to frequency"""
+    return c / wavelength
+
+def sdu( m, T ):
+    """Doppler unit for mass `m` and temperature `T`.
+    The standard deviation for a doppler-broadened line centered at 'nu' is `sdu( m, T ) * nu` """
+    return np.sqrt( kB * T / m / c**2 )
+
+class lineshape( object ):
+    def __init__( self, mean, std, prof_type='doppler' ):
+        self.mean = mean
+        self.std  = std
+        self.prof_type = prof_type
+
+    @property
+    def cdf( self ):
+        """Returns an array of the cdf"""
+        return scipy.special.erf( freq_param() / self.std / np.sqrt(2) )
 
 class Gas( object ):
     """Hold cross section info for each species.
@@ -57,18 +90,26 @@ class Atmosphere( object ):
         # layer thickness
         self.dz = self.z[:-1] - self.z[1:]
 
-        self.tau, self.dtau, self.albedo, self.tau_s = [],[],[],[]
+        m_oplus = Gas.species["O+"].mass
+        self.tau, self.dtau, self.albedo, self.tau_s, self.lineshape = [],[],[],[],[]
         for L in xrange( self.N_lambda ):
-            scatter_coeff, absorb_coeff = np.zeros_like(self.z), np.zeros_like(self.z)
+            nu = frequency(wavelengths[L])
+            ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
+            spec = ls.cdf
+            spec_chunks = spec[:,1:] - spec[:,:-1]
+            self.lineshape.append( spec_chunks[:] )
+
+            scatter_coeff = np.zeros( ( self.N_layers, spec_chunks.size ), dtype=dt )
+            absorb_coeff  = np.zeros_like( scatter_coeff, dtype=dt )
             # optical depths -- each of these is a list with an array for each wavelength
-            scatter_coeff = self.oplus * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures ) 
-            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )
+            scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures[:, None] ) * spec_chunks
+            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * spec_chunks
             # self.albedo = [ sd + np.exp( - sd ) - 1 for sd in scatter_depth ]
             
             # minus signs because z is decreasing
-            tau_a, tau_s , tau = np.zeros_like(self.z), np.zeros_like(self.z), np.zeros_like(self.z)
-            tau_a = abs( scipy.integrate.cumtrapz( absorb_coeff, self.z, initial=0 ) )
-            tau_s = abs( scipy.integrate.cumtrapz( scatter_coeff, self.z, initial=0 ) )
+            tau_a, tau_s , tau = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
+            tau_a = abs( scipy.integrate.cumtrapz( absorb_coeff, self.z, initial=0, axis=0 ) )
+            tau_s = abs( scipy.integrate.cumtrapz( scatter_coeff, self.z, initial=0, axis=0 ) )
 
             # dtau_abs = [ sum( self.neutrals[ gas.name ] * gas.sigma[w](None) * self.dz for gas in Gas.absorbers.values() ) for w in xrange(3) ]
             # self.dtau = [ scatter_depth[w] + dtau_abs[w] for w in xrange(3) ]
@@ -124,7 +165,8 @@ class Atmosphere( object ):
         # layers
         n = k[1]
         m = l[1]
-        return self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength )
+        # sum is over frequency, for complete frequency redistribution
+        return np.sum( self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ) )
 
     def W( self, n, i, m, wavelength ):
         """Exctinction probability for layer `n` -> `m` along direction `i`"""
@@ -179,11 +221,11 @@ class Atmosphere( object ):
         albedo = self.albedo[w][ ind ]
         # upwelling
         if np.sign(mu_j) == +1:
-            return scipy.integrate.quad( lambda t: self.T1( mu_j, mu_e, tau + t, tau_prime, albedo ), 0, dtau )[0] / dtau
+            return quad( lambda t: self.T1( mu_j, mu_e, tau + t, tau_prime, albedo ), 0, dtau )[0] / dtau
         # downwelling
         elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
             tau_np1 = self.tau[w][n+1]
-            return scipy.integrate.quad( lambda t: self.R1(-mu_j, mu_e, self.tau_0 - tau_np1 + t, tau_prime, albedo ) * \
+            return quad( lambda t: self.R1(-mu_j, mu_e, self.tau_0 - tau_np1 + t, tau_prime, albedo ) * \
                                             np.exp( - (tau + 1 - t ) / mu_e ), 0, dtau )[0] / dtau
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
@@ -193,13 +235,14 @@ class Atmosphere( object ):
         # http://www.light-measurement.com/reflection-absorption/
         w0 = albedo
         integrand = np.exp( -tau_prime * ( 1 / mu_j + 1 / mu_e ) ) * w0 * self.P( mu_j, mu_e )
-        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j, axis=0 ) )
 
     def T1( self, mu_j, mu_e, tau, tau_prime, albedo ):
         """Probability for diffuse transmission after one scattering"""
         w0 = albedo
         integrand = np.exp( -tau_prime / mu_j ) * w0 * self.P( mu_j, mu_e ) * np.exp( -( tau - tau_prime ) / mu_e )
-        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j, axis=0 ) )
+
 
 #### TO DO:
 #### WEIGHTS WILL BE WRONG FOR ERGODIC STATES
