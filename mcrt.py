@@ -2,8 +2,6 @@ from __future__ import division
 import numpy as np
 import scipy.integrate, scipy.special
 
-quad = np.vectorize(scipy.integrate.quad)
-
 dt = np.float
 
 # Boltzmann's constant
@@ -78,6 +76,9 @@ class Atmosphere( object ):
         self.N_layers = len(altitudes)
         self.N_lambda = len(wavelengths)
 
+        # phase function
+        self.P = P        
+
         # inputs
         # self.neutrals = { k : ( n[:-1] + n[1:] ) / 2 for (k, n) in neutrals_dict.iteritems() }
         # self.oplus = ( oplus_density[:-1] + oplus_density[1:] ) / 2
@@ -132,7 +133,7 @@ class Atmosphere( object ):
         self.ergodic   = range( len( viewing_angles ) )
 
         # convenience definitions
-        self.tau_0 = np.max(self.tau)
+        self.tau_0 = [ t[-1,:] for t in self.tau ]
 
     @property
     def Mm( self, wavelength ):
@@ -201,11 +202,6 @@ class Atmosphere( object ):
         """Scattering probability for `i` -> `j` in layer `n`"""
         return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] )
 
-    def P( self, mu_i, mu_j ):
-        """Phase function"""
-        weight = 1 # ONLY FOR TWO-STREAM
-        return 1 / 2 * weight / 2 # 1 / 4 / np.pi
-
     def R( self, l, e, wavelength ):
         """Transisition probability from transient state `l` -> ergodic state `e`.
         This is the viewing matrix."""
@@ -214,34 +210,61 @@ class Atmosphere( object ):
         n = l[1]
         mu_j = self.mu[j]
         mu_e = self.mu_e[e]
-        tau = self.tau[w][n]
-        dtau = self.dtau[w][n]
+        tau = self.tau[w][n,:]
+        dtau = self.dtau[w][n,:]
         ind = np.arange(n+1) # layers with optical depth <= tau
-        tau_prime = self.tau[w][ ind ] 
-        albedo = self.albedo[w][ ind ]
+        tau_prime = self.tau[w][ind,:] 
+        albedo = self.albedo[w][ind,:]
+        tau_0 = self.tau_0[w]
         # upwelling
         if np.sign(mu_j) == +1:
-            return quad( lambda t: self.T1( mu_j, mu_e, tau + t, tau_prime, albedo ), 0, dtau )[0] / dtau
+            return sum( quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w] ) )
         # downwelling
         elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
-            tau_np1 = self.tau[w][n+1]
-            return quad( lambda t: self.R1(-mu_j, mu_e, self.tau_0 - tau_np1 + t, tau_prime, albedo ) * \
-                                            np.exp( - (tau + 1 - t ) / mu_e ), 0, dtau )[0] / dtau
+            tau_np1 = self.tau[w][n+1,:]
+            return sum( quad_gen_R( -mu_j, mu_e, tau_0 - tau_np1, tau + 1, tau_prime, albedo, dtau, self.lineshape[w] ) )
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
-    def R1( self, mu_j, mu_e, tau, tau_prime, albedo ):
-        """Probability for diffuse reflection after one scattering"""
-        # http://www.light-measurement.com/reflection-absorption/
-        w0 = albedo
-        integrand = np.exp( -tau_prime * ( 1 / mu_j + 1 / mu_e ) ) * w0 * self.P( mu_j, mu_e )
-        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j, axis=0 ) )
 
-    def T1( self, mu_j, mu_e, tau, tau_prime, albedo ):
-        """Probability for diffuse transmission after one scattering"""
-        w0 = albedo
-        integrand = np.exp( -tau_prime / mu_j ) * w0 * self.P( mu_j, mu_e ) * np.exp( -( tau - tau_prime ) / mu_e )
-        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j, axis=0 ) )
+def P( mu_i, mu_j ):
+    """Phase function"""
+    weight = 1 # ONLY FOR TWO-STREAM
+    return 1 / 2 * weight / 2 # 1 / 4 / np.pi
+
+def R1( mu_j, mu_e, tau, tau_prime, albedo ):
+    """Probability for diffuse reflection after one scattering"""
+    # http://www.light-measurement.com/reflection-absorption/
+    w0 = albedo
+    integrand = np.exp( -tau_prime * ( 1 / mu_j + 1 / mu_e ) ) * w0 * P( mu_j, mu_e )
+    return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+
+def T1( mu_j, mu_e, tau, tau_prime, albedo ):
+    """Probability for diffuse transmission after one scattering"""
+    w0 = albedo
+    integrand = np.exp( -tau_prime / mu_j ) * w0 * P( mu_j, mu_e ) * np.exp( -( tau - tau_prime ) / mu_e )
+    return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+
+
+def quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls ):
+    """Generator for diffuse transmission integrals needed for R"""
+    N = len(tau)
+    tp = tau_prime.T
+    alb = albedo.T
+    for i in xrange(N):
+        dt = dtau[i]
+        yield scipy.integrate.quad( lambda t: T1( mu_j, mu_e, tau[i] + t, tp[i], alb[i] ), 0, dt )[0] / dt * ls[i]
+
+
+def quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls ):
+    """Generator for diffuse reflection integrals needed for R"""
+    N = len(tau_plus_one)
+    tp = tau_prime.T
+    alb = albedo.T
+    for i in xrange(N):
+        dt = dtau[i]
+        yield scipy.integrate.quad( ( lambda t: R1( mu_j, mu_e, tau_0_plus_tau_np1[i] + t, tp[i,:], alb[i,:] ) *\
+         np.exp( - (tau_plus_one[i] + 1 - t ) / mu_e ) ), 0, dt )[0] / dt * ls[i]
 
 
 #### TO DO:
