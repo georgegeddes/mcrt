@@ -137,9 +137,9 @@ class Atmosphere( object ):
 
     @property
     def Mm( self, wavelength ):
-        return self.multiple_scatter_matrix( self, wavelength, viewing=False )
+        return self.multiple_scatter_matrix( self, wavelength, view_height=None )
 
-    def multiple_scatter_matrix( self, wavelength, viewing=True ):
+    def multiple_scatter_matrix( self, wavelength, view_height=None ):
         """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
         n = len(self.transient)
         r = len(self.ergodic  )
@@ -147,8 +147,11 @@ class Atmosphere( object ):
         Q = np.fromiter( ( self.Q( k, l, wavelength ) for k in self.transient for l in self.transient ), dtype=dt )
         Q = Q.reshape( ( n, n ) )
 
-        if not viewing: 
+        if not view_height: 
             return np.linalg.inv( I -  Q ) # multiple scattering matrix, slow to calculate
+
+        # calculate reference depth for viewing height
+        self.calculate_view_depth(view_height)
 
         R = np.fromiter( ( self.R( l, e, wavelength ) for l in self.transient for e in self.ergodic ), dtype=dt ) 
         R = R.reshape( ( n, r ) )
@@ -213,58 +216,95 @@ class Atmosphere( object ):
         tau = self.tau[w][n,:]
         dtau = self.dtau[w][n,:]
         ind = np.arange(n+1) # layers with optical depth <= tau
-        tau_prime = self.tau[w][ind,:] 
+        tau_prime = self.tau[w][ind,:]
         albedo = self.albedo[w][ind,:]
         tau_0 = self.tau_0[w]
         # upwelling
         if np.sign(mu_j) == +1:
-            return sum( quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w] ) )
+            return  np.sum( quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) )
         # downwelling
         elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
             tau_np1 = self.tau[w][n+1,:]
-            return sum( quad_gen_R( -mu_j, mu_e, tau_0 - tau_np1, tau + 1, tau_prime, albedo, dtau, self.lineshape[w] ) )
+            return np.sum( quad_gen_R( -mu_j, mu_e, tau_0 - tau_np1, tau + 1, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) )
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
+    def calculate_view_depth(self,view_height):
+        """Returns the optical depth associated with the altitude `view_height` km."""
+        h = view_height*1e5
+        upper = self.z[0]
+        lower = self.z[-1]
+        upper_ind = 0
+        lower_ind = -1
+        for i,z in enumerate(self.z):
+            if z > h:
+                upper = z
+                upper_ind = i
+            else: 
+                lower = z
+                lower_ind = i
+                break
+
+        DZ = upper - lower
+        upper_weight = (upper-h)/DZ
+        lower_weight = (h-lower)/DZ
+        view_depth = np.array( [ t[upper_ind,:]*upper_weight + t[lower_ind,:]*lower_weight  for t in self.tau ] )
+        self.view_depth = view_depth
+        return self.view_depth
 
 def P( mu_i, mu_j ):
     """Phase function"""
     weight = 1 # ONLY FOR TWO-STREAM
     return 1 / 2 * weight / 2 # 1 / 4 / np.pi
 
-def R1( mu_j, mu_e, tau, tau_prime, albedo ):
+def R1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0):
     """Probability for diffuse reflection after one scattering"""
     # http://www.light-measurement.com/reflection-absorption/
     w0 = albedo
+    # ind=0
+    # for i, tp in enumerate(tau_prime):
+    #     if all(tp <= tau_ref) :
+    #         ind=i
     integrand = np.exp( -tau_prime * ( 1 / mu_j + 1 / mu_e ) ) * w0 * P( mu_j, mu_e )
-    return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+    try:
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+    except IndexError:
+        return 0.0
 
-def T1( mu_j, mu_e, tau, tau_prime, albedo ):
+def T1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0 ):
     """Probability for diffuse transmission after one scattering"""
     w0 = albedo
+    # ind=0
+    # for i, tp in enumerate(tau_prime):
+    #     if all(tp <= tau_ref) :
+    #         ind=i
     integrand = np.exp( -tau_prime / mu_j ) * w0 * P( mu_j, mu_e ) * np.exp( -( tau - tau_prime ) / mu_e )
-    return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+    try:
+        return abs( scipy.integrate.trapz( y=integrand, x=tau_prime / mu_j ) )
+    except IndexError:
+        return 0.0
 
-
-def quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls ):
-    """Generator for diffuse transmission integrals needed for R"""
+def quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls, tr ):
+    """Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
     N = len(tau)
-    tp = tau_prime.T
-    alb = albedo.T
+    tp = tau_prime
+    alb = albedo
     for i in xrange(N):
         dt = dtau[i]
-        yield scipy.integrate.quad( lambda t: T1( mu_j, mu_e, tau[i] + t, tp[i], alb[i] ), 0, dt )[0] / dt * ls[i]
+        q = scipy.integrate.quad( lambda t: T1( mu_j, mu_e, tau[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ), 0, dt )[0] / dt * ls[i]
+        yield np.sum(q)
 
 
-def quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls ):
-    """Generator for diffuse reflection integrals needed for R"""
+def quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls, tr ):
+    """Generator for diffuse reflection integrals at each point in the broadened line spectrum."""
     N = len(tau_plus_one)
-    tp = tau_prime.T
-    alb = albedo.T
+    tp = tau_prime
+    alb = albedo
     for i in xrange(N):
         dt = dtau[i]
-        yield scipy.integrate.quad( ( lambda t: R1( mu_j, mu_e, tau_0_plus_tau_np1[i] + t, tp[i,:], alb[i,:] ) *\
-         np.exp( - (tau_plus_one[i] + 1 - t ) / mu_e ) ), 0, dt )[0] / dt * ls[i]
+        q = scipy.integrate.quad( ( lambda t: R1( mu_j, mu_e, tau_0_plus_tau_np1[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ) *\
+            np.exp( - (tau_plus_one[i] + 1 - t ) / mu_e ) ), 0, dt )[0] / dt * ls[i]
+        yield np.sum(q)
 
 
 #### TO DO:
