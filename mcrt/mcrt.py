@@ -222,11 +222,12 @@ class Atmosphere( object ):
         tau_0 = self.tau_0[w]
         # upwelling
         if np.sign(mu_j) == +1:
-            return  np.sum( quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) )
+            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) ]).T
+            return  np.sum( arr, axis=1 )
         # downwelling
         elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
-            tau_np1 = self.tau[w][n+1,:]
-            return np.sum( quad_gen_R( -mu_j, mu_e, tau_0 - tau_np1, tau + 1, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) )
+            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) ]).T
+            return  np.sum( arr, axis=1 )
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
@@ -285,8 +286,62 @@ def T1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0 ):
     except IndexError:
         return 0
 
-def quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls, tr ):
+def T_integrand(mu_J, mu_E, tau_view, tau_range, albedo):
+    """A not-shitty version of the diffuse transmission probability"""
+    # ignore ce/2 for now, since it's just a constant
+    mu_e, mu_j = abs(mu_E), abs(mu_J)
+    tau = max(tau_range) 
+    tau_prime = tau_range
+    integrand = 1.0/mu_j * albedo * P(mu_j, mu_e) * np.exp(-tau/mu_e -(1.0/mu_j - 1.0/mu_e)*tau_prime)
+    return integrand
+
+def R_integrand(mu_j, mu_e, tau_range, albedo):
+    tau = min(tau_range)
+    tau_prime = tau_range
+    integrand = abs(1.0/mu_j) * albedo * P(mu_j,mu_e) *\
+        np.exp(tau/abs(mu_j) -tau_prime*(1.0/abs(mu_j)+1.0/abs(mu_e)) )
+    return integrand
+
+def quad_gen_T(mu_j, mu_e, tau, albedo, dtau, ls, top ):
     """Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
+    N = len(tau)
+    tp = tau
+    alb = albedo
+    tau_view = tau[top]
+    for line_chunk in xrange(N):
+        max_ind = len(tau)
+        data = [0.0]*top
+        for bottom in xrange(top+1,max_ind-1):
+            ind = xrange(top,bottom)
+            tp = tau[ind,line_chunk]
+            alb = albedo[ind,line_chunk]
+            I = T_integrand(mu_j, mu_e, tau_view, tp, alb)
+            # t_sub = np.arctan(tau_prime)
+            # I2 = T_integrand(mu_j, mu_e, np.arctan(tau_view), t_sub, albedo)/(np.cos(t_sub)**2)
+            data.append( trapz(I, tau_prime) * ls[line_chunk] )
+        yield np.array(data)
+
+def quad_gen_R(mu_j, mu_e, tau, albedo, dtau, ls, top ):
+    """Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
+    N = len(tau)
+    tp = tau
+    alb = albedo
+    tau_view = tau[top]
+    for line_chunk in xrange(N):
+        max_ind = len(tau)
+        data = [0.0]*top
+        for bottom in xrange(top+1,max_ind-1):
+            ind = xrange(top,bottom)
+            tp = tau[ind,line_chunk]
+            alb = albedo[ind,line_chunk]
+            I = R_integrand(mu_j, mu_e, tau_view, tp, alb)
+            # t_sub = np.arctan(tau_prime)
+            # I2 = T_integrand(mu_j, mu_e, np.arctan(tau_view), t_sub, albedo)/(np.cos(t_sub)**2)
+            data.append( trapz(I, tau_prime) * ls[line_chunk] )
+        yield np.array(data)
+
+def _quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls, tr ):
+    """**OLD** Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
     N = len(tau)
     tp = tau_prime
     alb = albedo
@@ -295,8 +350,8 @@ def quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls, tr ):
         q = scipy.integrate.quad( lambda t: T1( mu_j, mu_e, tau[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ), 0, dt )[0] / dt * ls[i]
         yield np.sum(q)
 
-def quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls, tr ):
-    """Generator for diffuse reflection integrals at each point in the broadened line spectrum."""
+def _quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls, tr ):
+    """**OLD** Generator for diffuse reflection integrals at each point in the broadened line spectrum."""
     N = len(tau_plus_one)
     tp = tau_prime
     alb = albedo
