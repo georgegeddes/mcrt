@@ -2,7 +2,6 @@ from __future__ import division
 import numpy as np
 import scipy.integrate, scipy.special
 
-
 dt = np.float
 
 # Boltzmann's constant
@@ -69,9 +68,12 @@ class Atmosphere( object ):
     """Contains atmospheric properties and methods for calculating RT."""
     def __init__( self, altitudes, angles, temperatures, neutrals_dict, oplus_density, viewing_angles, wavelengths=[832, 833, 834] ):
         # coordinates
-        self.z   = altitudes * 1e5 # km -> cm
-        self.mu  = np.cos( angles )
-        self.mu_e = -np.cos( viewing_angles )
+        z = altitudes * 1e5 # km -> cm
+        self.z   = z
+        self.mu, self.leg_weights  = best_angles(np.cos(angles))
+        # self.mu_e = -np.cos( viewing_angles )
+        self.mu_e = np.cos(viewing_angles*np.pi/180.)
+        self.ergodic_weights = np.ones(len(viewing_angles))
 
         self.N_angles = len(angles)
         self.N_layers = len(altitudes)
@@ -93,7 +95,7 @@ class Atmosphere( object ):
         self.dz = self.z[:-1] - self.z[1:]
 
         m_oplus = Gas.species["O+"].mass
-        self.tau, self.dtau, self.albedo, self.tau_s, self.lineshape = [],[],[],[],[]
+        self.tau, self.dtau, self.albedo, self.tau_s, self.lineshape, self.extinction = [],[],[],[],[],[]
         for L in xrange( self.N_lambda ):
             nu = frequency(wavelengths[L])
             ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
@@ -110,8 +112,21 @@ class Atmosphere( object ):
             
             # minus signs because z is decreasing
             tau_a, tau_s , tau = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
-            tau_a = abs( scipy.integrate.cumtrapz( absorb_coeff, self.z, initial=0, axis=0 ) )
-            tau_s = abs( scipy.integrate.cumtrapz( scatter_coeff, self.z, initial=0, axis=0 ) )
+            #the geometric mean yields a more representative result, right?
+            gmean_abs = np.sqrt( absorb_coeff[:-1,:] * absorb_coeff[1:,:] )
+            gmean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
+
+            dtau_a, dtau_s = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
+            dtau_a[1:,:] = gmean_abs * abs(z[:-1]-z[1:])[:,None]
+            dtau_s[1:,:] = gmean_sct * abs(z[:-1]-z[1:])[:,None]
+            #initial depths should be taken from infinity
+            dtau_a[0,:] = abs((z[0] - z[1]) * absorb_coeff[0,:] / np.log(absorb_coeff[1,:]/absorb_coeff[0,:]))
+            dtau_s[0,:] = abs((z[0] - z[1]) * scatter_coeff[0,:] / np.log(scatter_coeff[1,:]/scatter_coeff[0,:]))
+
+            tau_a = np.cumsum(dtau_a, axis=0)
+            tau_s = np.cumsum(dtau_s, axis=0)
+            # tau_a = abs( scipy.integrate.cumtrapz( absorb_coeff, self.z, initial=0, axis=0 ) )
+            # tau_s = abs( scipy.integrate.cumtrapz( scatter_coeff, self.z, initial=0, axis=0 ) )
 
             # dtau_abs = [ sum( self.neutrals[ gas.name ] * gas.sigma[w](None) * self.dz for gas in Gas.absorbers.values() ) for w in xrange(3) ]
             # self.dtau = [ scatter_depth[w] + dtau_abs[w] for w in xrange(3) ]
@@ -120,14 +135,18 @@ class Atmosphere( object ):
             self.tau_s.append(tau_s)
             self.tau.append( tau ) 
             
-            dtau = np.zeros_like( tau )
-            dtau[1:] = tau[1:] - tau[:-1]
-            dtau[0] = 2*dtau[1]-dtau[2]
+            # dtau = np.zeros_like( tau )
+            # dtau[1:] = tau[1:] - tau[:-1]
+            # dtau[0] = tau[0]
+            dtau = dtau_a + dtau_s
             self.dtau.append( dtau )
             
             alb = np.zeros_like( tau )
-            alb = scatter_coeff / ( scatter_coeff + absorb_coeff )
+            # alb = scatter_coeff / ( scatter_coeff + absorb_coeff )
+            alb[:-1] = gmean_sct / ( gmean_sct + gmean_abs )
             self.albedo.append( alb )
+
+        self.extinction.append(gmean_sct + gmean_abs)
 
         # states for easy indexing later
         self.transient = [ ( i, n ) for i in xrange(self.N_angles) for n in xrange(self.N_layers) ]
@@ -136,9 +155,9 @@ class Atmosphere( object ):
         # convenience definitions
         self.tau_0 = [ t[-1,:] for t in self.tau ]
 
-    @property
-    def Mm( self, wavelength ):
-        return self.multiple_scatter_matrix( self, wavelength, view_height=None )
+    # @property
+    # def Mm( self, wavelength ):
+    #     return self.multiple_scatter_matrix( self, wavelength, view_height=None )
 
     def multiple_scatter_matrix( self, wavelength, view_height=None ):
         """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
@@ -154,8 +173,9 @@ class Atmosphere( object ):
         # calculate reference depth for viewing height
         self.calculate_view_depth(view_height)
 
-        R = np.fromiter( ( self.R( l, e, wavelength ) for e in self.ergodic  for l in self.transient), dtype=dt ) 
-        R = R.reshape( ( n, r ) )
+        # R = np.vstack([self.R( l, e, wavelength ) for e in self.ergodic  for l in self.transient[0,:]] ).T 
+        # R = R.reshape( ( n, r ) )
+        R = self.R(wavelength, view_height)
 
         # ( I - Q ) X = R
         X = np.linalg.solve( I - Q, R )
@@ -179,6 +199,7 @@ class Atmosphere( object ):
         mu_i    = self.mu[i]
         dtau_n  = self.dtau[w][n]
         dtau_m  = self.dtau[w][m]
+        c = self.leg_weights[i]
         # upwelling
         if n > m:
             if np.sign( mu_i ) == -1: return 0
@@ -187,7 +208,7 @@ class Atmosphere( object ):
             mu = mu_i
             return mu / dtau_n * ( 1 - np.exp( - dtau_n / mu ) ) * \
                    np.exp( -( tau_n - tau_mp1 ) / mu ) * \
-                   ( 1 - np.exp( - dtau_m / mu ) )
+                   ( 1 - np.exp( - dtau_m / mu ) ) * c
         # downwelling
         elif n < m: 
             if np.sign( mu_i ) == +1: return 0
@@ -196,40 +217,28 @@ class Atmosphere( object ):
             tau_np1 = self.tau[w][n+1]
             return mu / dtau_n * ( 1 - np.exp( - dtau_n / mu ) ) * \
                    np.exp( -( tau_m - tau_np1 ) / mu ) * \
-                   ( 1 - np.exp( - dtau_m / mu ) )
+                   ( 1 - np.exp( - dtau_m / mu ) ) * c
         # n == m, recapture
         else: 
             mu = abs( mu_i )
-            return 1 - mu / dtau_n * ( 1 - np.exp( - dtau_n / mu ) ) 
+            return 1 - mu / dtau_n * ( 1 - np.exp( - dtau_n / mu ) )  * c
 
     def Ms( self, i, j, n, wavelength ):
         """Scattering probability for `i` -> `j` in layer `n`"""
-        return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] )
+        return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] ) * self.leg_weights[i] 
 
-    def R( self, l, e, wavelength ):
-        """Transisition probability from transient state `l` -> ergodic state `e`.
-        This is the viewing matrix."""
-        w = wavelength
-        j = l[0]
-        n = l[1]
-        mu_j = self.mu[j]
-        mu_e = self.mu_e[e]
-        tau = self.tau[w][n,:]
-        dtau = self.dtau[w][n,:]
-        ind = np.arange(n+1) # layers with optical depth <= tau
-        tau_prime = self.tau[w][ind,:]
-        albedo = self.albedo[w][ind,:]
-        tau_0 = self.tau_0[w]
-        # upwelling
-        if np.sign(mu_j) == +1:
-            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) ]).T
-            return  np.sum( arr, axis=1 )
-        # downwelling
-        elif np.sign(mu_j) == -1 and n < self.N_layers - 1:
-            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, tau_prime, albedo, dtau, self.lineshape[w], self.view_depth[w] ) ]).T
-            return  np.sum( arr, axis=1 )
-        else: 
-            return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
+    def R(self, wavelength, view_height):
+        self.calculate_view_depth(view_height)
+        transient_angles = self.mu
+        ergodic_angles = self.mu_e
+        ergodic_weights = self.ergodic_weights
+        albedo = self.albedo[wavelength]
+        tau = self.tau[wavelength]
+        view_depth = self.view_depth[wavelength]
+        view_ind = self.view_ind[wavelength]
+        lineshape = self.lineshape[wavelength]
+        out = R_matrix(transient_angles,ergodic_angles,ergodic_weights,albedo,tau,view_depth,view_ind,lineshape)
+        return out
 
     def calculate_view_depth(self,view_height):
         """Returns the optical depth associated with the altitude `view_height` km."""
@@ -251,16 +260,44 @@ class Atmosphere( object ):
         upper_weight = (upper-h)/DZ
         lower_weight = (h-lower)/DZ
         view_depth = np.array( [ t[upper_ind,:]*upper_weight + t[lower_ind,:]*lower_weight  for t in self.tau ] )
+        # define an index to serve as a proxy for the top of the atmosphere
+        view_ind = [ np.max(np.where(np.sum(self.tau[w],axis=1) > np.sum(view_depth[w]))) for w in xrange(self.N_lambda) ]
         self.view_depth = view_depth
+        self.view_ind = view_ind
         return self.view_depth
+
+    def _R( self, l, e, wavelength ):
+        """Transisition probability from transient state `l` -> ergodic state `e`.
+        This is the viewing matrix."""
+        w = wavelength
+        j = l[0]
+        # n = l[1]
+        mu_j = self.mu[j]
+        mu_e = self.mu_e[e]
+        # tau = self.tau[w][n,:]
+        dtau = self.dtau[w]
+        # ind = np.arange(n+1) # layers with optical depth <= tau
+        tau = self.tau[w]
+        albedo = self.albedo[w]
+        # tau_0 = self.tau_0[w]
+        # upwelling
+        if np.sign(mu_j) == +1:
+            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
+            return  np.sum( arr, axis=1 )
+        # downwelling
+        elif np.sign(mu_j) == -1:# and n < self.N_layers - 1:
+            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
+            return  np.sum( arr, axis=1 )
+        else: 
+            return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
 def P( mu_i, mu_j ):
     """Phase function"""
     weight = 1 # ONLY FOR TWO-STREAM
-    return 1 / 2 * weight / 2 # 1 / 4 / np.pi
+    return weight / 2 # 1 / 4 / np.pi
 
 def R1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0):
-    """Probability for diffuse reflection after one scattering"""
+    """Probability for diffuse reflection after one scattering."""
     # http://www.light-measurement.com/reflection-absorption/
     w0 = albedo
     # ind=0
@@ -286,31 +323,78 @@ def T1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0 ):
     except IndexError:
         return 0
 
-def T_integrand(mu_J, mu_E, tau_view, tau_range, albedo):
+def R_matrix(transient_angles,ergodic_angles,ergodic_weights,albedo,tau,view_depth,view_ind, lineshape):
+    """Construct the viewing matrix."""
+    # Assume tau applies to a single line.
+    # This makes tau a ~ 100 x 23 numpy array (alt x wavelength)
+    # l, e are lists of states
+    # Each element l,e is the probability for a photon emitted in the state l to scatter into the state e
+    n = tau.shape[0]
+    output = np.zeros((len(transient_angles)*n,len(ergodic_angles)))
+    topside = xrange(0,view_ind)
+    bottomside = xrange(view_ind,n)
+    topside_depth = abs(tau[topside,:] - view_depth)
+    bottomside_depth = abs(tau[bottomside,:] - view_depth) 
+    for e, mu_e in enumerate(ergodic_angles):
+        weight = ergodic_weights[e]
+        for i in xrange(len(lineshape[0,:])):
+            for mu_j in transient_angles:
+                # they way that transient is set up, the upwellng angles come first, then downwelling.
+                if np.sign(mu_j) < 0: # upwelling
+                    below = T_integral(mu_j, mu_e, bottomside_depth[:,i], albedo[bottomside,i])
+                    above = R_integral(mu_j, mu_e, topside_depth[:,i], albedo[topside,i])
+                    # if height < view_height:
+                    #     # calculate transmission for depths below
+                    # if height > view_height
+                    #     # calculate reflection for depths above
+                    # join tops and bottoms
+                    # print above.shape, below.shape, weight
+                    output[:n,e] += np.hstack([above, below]) * lineshape[:,i] * weight
+                elif np.sign(mu_j) > 0: # downwelling
+                    above = T_integral(mu_j, mu_e, topside_depth[:,i], albedo[topside,i])
+                    below = R_integral(mu_j, mu_e, bottomside_depth[:,i], albedo[bottomside,i])
+
+                    # if height < view_height:
+                    #     # calculate reflection
+                    # if height > view_height
+                    #     # calculate transmission
+                    # join tops and bottoms
+                    output[n:,e] += np.hstack([above, below]) * lineshape[:,i] * weight
+    return output
+
+
+
+def T_integral(mu_J, mu_E, tau_range, albedo):
     """A not-shitty version of the diffuse transmission probability"""
-    # ignore ce/2 for now, since it's just a constant
+    # if np.sign(mu_J) == np.sign(mu_E):
+    #     return np.zeros_like(tau_range)
     mu_e, mu_j = abs(mu_E), abs(mu_J)
     tau = max(tau_range) 
     tau_prime = tau_range
-    integrand = 1.0/mu_j * albedo * P(mu_j, mu_e) * np.exp(-tau/mu_e -(1.0/mu_j - 1.0/mu_e)*tau_prime)
-    return integrand
+    integrand = 1.0/mu_j * albedo * P(mu_j, mu_e) * np.exp(-tau/mu_e -(1.0/mu_j - 1.0/mu_e)*tau_prime) / 2.0
+    return scipy.integrate.cumtrapz(integrand, tau_range, initial=0)
 
-def R_integrand(mu_j, mu_e, tau_range, albedo):
+def R_integral(mu_J, mu_E, tau_range, albedo):
+    """Takes in angles, optical depth, and albedo and returns the integrand for diffuse reflection."""
+    # if np.sign(mu_J) != np.sign(mu_E):
+    #     return np.zeros_like(tau_range)
+    mu_e, mu_j = abs(mu_E), abs(mu_J)
     tau = min(tau_range)
     tau_prime = tau_range
-    integrand = abs(1.0/mu_j) * albedo * P(mu_j,mu_e) *\
-        np.exp(tau/abs(mu_j) -tau_prime*(1.0/abs(mu_j)+1.0/abs(mu_e)) )
-    return integrand
+    integrand = 1.0/mu_j * albedo * P(mu_j,mu_e) *\
+        np.exp(tau/mu_j -tau_prime*(1.0/mu_j+1.0/mu_e) ) / 2.0
+    return scipy.integrate.cumtrapz(integrand, tau_range, initial=0)
 
-def quad_gen_T(mu_j, mu_e, tau, albedo, dtau, ls, top ):
+def quad_gen_T(mu_j, mu_e, tau, albedo, dtau, ls, view_depth, top ):
     """Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
-    N = len(tau)
+    N = tau.shape[1]
     tp = tau
     alb = albedo
-    tau_view = tau[top]
+    tau_view = top
     for line_chunk in xrange(N):
         max_ind = len(tau)
         data = [0.0]*top
+        tau_view = view_depth[line_chunk]
         for bottom in xrange(top+1,max_ind-1):
             ind = xrange(top,bottom)
             tp = tau[ind,line_chunk]
@@ -321,15 +405,15 @@ def quad_gen_T(mu_j, mu_e, tau, albedo, dtau, ls, top ):
             data.append( trapz(I, tau_prime) * ls[line_chunk] )
         yield np.array(data)
 
-def quad_gen_R(mu_j, mu_e, tau, albedo, dtau, ls, top ):
+def quad_gen_R(mu_j, mu_e, tau, albedo, dtau, ls, view_depth, top ):
     """Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
-    N = len(tau)
+    N = tau.shape[1]
     tp = tau
     alb = albedo
-    tau_view = tau[top]
     for line_chunk in xrange(N):
         max_ind = len(tau)
         data = [0.0]*top
+        tau_view = view_depth[line_chunk]
         for bottom in xrange(top+1,max_ind-1):
             ind = xrange(top,bottom)
             tp = tau[ind,line_chunk]
@@ -360,6 +444,18 @@ def _quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo
         q = scipy.integrate.quad( ( lambda t: R1( mu_j, mu_e, tau_0_plus_tau_np1[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ) *\
             np.exp( - (tau_plus_one[i] + 1 - t ) / mu_e ) ), 0, dt )[0] / dt * ls[i]
         yield np.sum(q)
+
+def best_angles(angles):
+    """Takes in a range of viewing angles and assumes that those angles are silly, \
+    replacing them with Legendre-Gauss quadrature of degree equal to the number of angles."""
+    a, b = min(angles), max(angles)
+    x, w = np.polynomial.legendre.leggauss(len(angles))
+    y = ( x * (b-a) + (b+a) )/2.0
+    return y, w
+
+def ver_to_inten(volume_emission_rate, extinction_coefficient):
+    intensity = volume_emission_rate / extinction_coefficient / 4.0 / np.pi
+    return intensity
 
 #### TO DO:
 #### WEIGHTS WILL BE WRONG FOR ERGODIC STATES
