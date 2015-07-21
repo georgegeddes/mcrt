@@ -146,7 +146,7 @@ class Atmosphere( object ):
             alb[:-1] = gmean_sct / ( gmean_sct + gmean_abs )
             self.albedo.append( alb )
 
-        self.extinction.append(gmean_sct + gmean_abs)
+            self.extinction.append(gmean_sct + gmean_abs)
 
         # states for easy indexing later
         self.transient = [ ( i, n ) for i in xrange(self.N_angles) for n in xrange(self.N_layers) ]
