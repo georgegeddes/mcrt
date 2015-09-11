@@ -83,9 +83,6 @@ class Atmosphere( object ):
         self.P = P        
 
         # inputs
-        # self.neutrals = { k : ( n[:-1] + n[1:] ) / 2 for (k, n) in neutrals_dict.iteritems() }
-        # self.oplus = ( oplus_density[:-1] + oplus_density[1:] ) / 2
-        # self.temperatures = ( temperatures[:-1] + temperatures[1:] ) / 2
         self.neutrals = neutrals_dict
         self.oplus = oplus_density
         self.temperatures = temperatures
@@ -107,42 +104,34 @@ class Atmosphere( object ):
             absorb_coeff  = np.zeros_like( scatter_coeff, dtype=dt )
             # optical depths -- each of these is a list with an array for each wavelength
             scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures[:, None] ) * spec_chunks
-            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * spec_chunks
-            # self.albedo = [ sd + np.exp( - sd ) - 1 for sd in scatter_depth ]
-            
+            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * np.ones_like(spec_chunks)
+
             # minus signs because z is decreasing
             tau_a, tau_s , tau = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
-            #the geometric mean yields a more representative result, right?
+
+            # geometric mean makes for a better estimate, I think. <======= FIGURE OUT IF THIS IS TRUE
             gmean_abs = np.sqrt( absorb_coeff[:-1,:] * absorb_coeff[1:,:] )
             gmean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
 
             dtau_a, dtau_s = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
             dtau_a[1:,:] = gmean_abs * abs(z[:-1]-z[1:])[:,None]
             dtau_s[1:,:] = gmean_sct * abs(z[:-1]-z[1:])[:,None]
-            #initial depths should be taken from infinity
+
+            # initial depths should be taken from infinity
             dtau_a[0,:] = abs((z[0] - z[1]) * absorb_coeff[0,:] / np.log(absorb_coeff[1,:]/absorb_coeff[0,:]))
             dtau_s[0,:] = abs((z[0] - z[1]) * scatter_coeff[0,:] / np.log(scatter_coeff[1,:]/scatter_coeff[0,:]))
 
             tau_a = np.cumsum(dtau_a, axis=0)
             tau_s = np.cumsum(dtau_s, axis=0)
-            # tau_a = abs( scipy.integrate.cumtrapz( absorb_coeff, self.z, initial=0, axis=0 ) )
-            # tau_s = abs( scipy.integrate.cumtrapz( scatter_coeff, self.z, initial=0, axis=0 ) )
 
-            # dtau_abs = [ sum( self.neutrals[ gas.name ] * gas.sigma[w](None) * self.dz for gas in Gas.absorbers.values() ) for w in xrange(3) ]
-            # self.dtau = [ scatter_depth[w] + dtau_abs[w] for w in xrange(3) ]
-            # self.tau = [ np.array( [0.0] + [ t for t in np.cumsum( dtau ) ] ) for dtau in self.dtau ]
             tau = tau_a + tau_s
             self.tau_s.append(tau_s)
             self.tau.append( tau ) 
             
-            # dtau = np.zeros_like( tau )
-            # dtau[1:] = tau[1:] - tau[:-1]
-            # dtau[0] = tau[0]
             dtau = dtau_a + dtau_s
             self.dtau.append( dtau )
             
             alb = np.zeros_like( tau )
-            # alb = scatter_coeff / ( scatter_coeff + absorb_coeff )
             alb[:-1] = gmean_sct / ( gmean_sct + gmean_abs )
             self.albedo.append( alb )
 
@@ -154,10 +143,6 @@ class Atmosphere( object ):
 
         # convenience definitions
         self.tau_0 = [ t[-1,:] for t in self.tau ]
-
-    # @property
-    # def Mm( self, wavelength ):
-    #     return self.multiple_scatter_matrix( self, wavelength, view_height=None )
 
     def multiple_scatter_matrix( self, wavelength, view_height=None ):
         """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
@@ -173,8 +158,6 @@ class Atmosphere( object ):
         # calculate reference depth for viewing height
         self.calculate_view_depth(view_height)
 
-        # R = np.vstack([self.R( l, e, wavelength ) for e in self.ergodic  for l in self.transient[0,:]] ).T 
-        # R = R.reshape( ( n, r ) )
         R = self.R(wavelength, view_height)
 
         # ( I - Q ) X = R
@@ -424,27 +407,6 @@ def quad_gen_R(mu_j, mu_e, tau, albedo, dtau, ls, view_depth, top ):
             data.append( trapz(I, tau_prime) * ls[line_chunk] )
         yield np.array(data)
 
-def _quad_gen_T( mu_j, mu_e, tau, tau_prime, albedo, dtau, ls, tr ):
-    """**OLD** Generator for diffuse transmission integrals at each point in the broadened line spectrum."""
-    N = len(tau)
-    tp = tau_prime
-    alb = albedo
-    for i in xrange(N):
-        dt = dtau[i]
-        q = scipy.integrate.quad( lambda t: T1( mu_j, mu_e, tau[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ), 0, dt )[0] / dt * ls[i]
-        yield np.sum(q)
-
-def _quad_gen_R( mu_j, mu_e, tau_0_plus_tau_np1, tau_plus_one, tau_prime, albedo, dtau, ls, tr ):
-    """**OLD** Generator for diffuse reflection integrals at each point in the broadened line spectrum."""
-    N = len(tau_plus_one)
-    tp = tau_prime
-    alb = albedo
-    for i in xrange(N):
-        dt = dtau[i]
-        q = scipy.integrate.quad( ( lambda t: R1( mu_j, mu_e, tau_0_plus_tau_np1[i] + t, tp.flat[i], alb.flat[i], tau_ref=tr ) *\
-            np.exp( - (tau_plus_one[i] + 1 - t ) / mu_e ) ), 0, dt )[0] / dt * ls[i]
-        yield np.sum(q)
-
 def best_angles(angles):
     """Takes in a range of viewing angles and assumes that those angles are silly, \
     replacing them with Legendre-Gauss quadrature of degree equal to the number of angles."""
@@ -457,6 +419,3 @@ def ver_to_inten(volume_emission_rate, extinction_coefficient):
     intensity = volume_emission_rate / extinction_coefficient / 4.0 / np.pi
     return intensity
 
-#### TO DO:
-#### WEIGHTS WILL BE WRONG FOR ERGODIC STATES
-#### Information about angles and such does not need to be included in __init__(). They should be arguments to multiple_scatter_matrix
