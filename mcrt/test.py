@@ -66,7 +66,5 @@ def TestAtmosphere(N_angles = 2):
 
 
 
-
-
-
-
+if __name__=="__main__":
+    print(TestAtmosphere())
