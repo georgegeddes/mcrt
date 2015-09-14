@@ -6,7 +6,71 @@ from .gas import Gas, lineshape, sdu, frequency, freq_param, kB, c
 dt = np.float
 
 class Atmosphere( object ):
-    """Contains atmospheric properties and methods for calculating RT."""
+    """
+    Contains atmospheric properties and methods for radiative transport calculations.
+
+    Parameters
+    ----------
+    altitudes : array_like
+        Altitude grid in km.
+    angles : array_like 
+        Angles at which photons may propagate.
+    temperatures : array_like
+        Temperature of medium (will be moved to mcrt.gas.Gas soon).
+    neutrals_dict : dictionary
+        Dictionary of neutral gas species.
+    oplus_density : array_like
+        Density of scatterers.
+    viewing_angles : array_like
+        Desired viewing angles (currently unused).
+    wavelengths : list of ints/floats
+        Line center wavelengths of the scattered features.
+
+    Attributes
+    ----------
+    N_angles : int
+        Number of internal angles.
+    N_layers : int
+        Number of altitudes.
+    N_lambda : int
+        Number of scattered features.
+    neutrals : dictionary
+        Dictionary of neutral species.
+    oplus : dictionary
+        Dictionary of scattering species.
+    temperatures : array_like
+        Gas temperatures.
+    tau : list of arrays
+        Optical depth for each feature.
+    albedo : list of arrays
+        Single-scattering albedo for each feature.
+    tau_s : list of arrays
+        Optical depth for scattering only.
+    lineshape : mcrt.gas.lineshape
+    transient : list of tuples
+        Indices of transient states.
+    ergodic : list of tuples
+        Indices of ergodic states.
+
+    Other Attributes
+    ----------
+    z : array_like
+        Altitudes in cm.
+    dz : array_like
+        Layer thicknesses in cm.
+    mu : array_like
+        Cosine of photon propagation angles.
+    leg_weights : array_like
+        Gauss-legendre weights corresponding to `mum`.
+    viewing_angles : array_like
+    mu_e : array_like
+        Cosines of viewing angles.
+    ergodic_weights : array_like
+        G-L weights of viewing angles
+    extinction : list of arrays
+    dtau : list of arrays
+    tau_0 : list of floats
+    """
     def __init__( self, altitudes, angles, temperatures, neutrals_dict, oplus_density, viewing_angles, wavelengths=[832, 833, 834] ):
         # coordinates
         z = altitudes * 1e5 # km -> cm
@@ -86,7 +150,21 @@ class Atmosphere( object ):
         self.tau_0 = [ t[-1,:] for t in self.tau ]
 
     def multiple_scatter_matrix( self, wavelength, view_height=None ):
-        """The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution"""
+        """
+        The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution.
+        
+        Parameters
+        ----------
+        wavelength : int
+            Index corresponding to the desired wavelength.
+        view_height : float
+            Not yet useful...
+
+        Returns
+        -------
+        array (matrix)
+            The multiple scattering matrix for the chosen wavelength.
+        """
         n = len(self.transient)
         r = len(self.ergodic  )
         I = np.eye( n )
@@ -107,7 +185,23 @@ class Atmosphere( object ):
         return X
 
     def Q( self, k, l, wavelength ):
-        """Transition probability for transient state `k` -> transient state `l`"""
+        """
+        Transition probability for transient state `k` -> transient state `l`
+        
+        Parameters
+        ----------
+        k : int
+            Index of the incoming photon's state.
+        l : int
+            Index of the scattered photon's state.
+        wavelength : int
+            Index of the desired wavelength.
+
+        Returns
+        -------
+        float
+            An element of the transition matrix.
+        """
         # angles
         i = k[0]
         j = l[0]
@@ -216,7 +310,14 @@ class Atmosphere( object ):
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
 
 def P( mu_i, mu_j ):
-    """Phase function"""
+    """    
+    Isotropic phase function. Input parameters are ignored completely.
+    
+    Returns
+    -------
+    float
+        1 / 2
+    """
     weight = 1 # ONLY FOR TWO-STREAM
     return weight / 2 # 1 / 4 / np.pi
 
