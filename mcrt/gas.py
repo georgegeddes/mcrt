@@ -1,3 +1,6 @@
+import numpy as np
+import scipy.special
+
 dt = np.float
 
 # Boltzmann's constant
