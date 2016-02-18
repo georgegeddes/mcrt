@@ -39,3 +39,205 @@ class Interpolator( object ):
         for a,b,ya,H in self.cells:
             interpolated = np.where((x<b)*(x>a),f_in(a,ya,H),interpolated)
         return interpolated
+
+class ScaleHeightInterpolate( object ):
+    """
+    Interpolate a function y(x) assuming a constant scale height between data points.
+    
+    Parameters
+    ----------
+    x : array
+        Support of the function to be interpolated
+    y : array
+        Function values correspniding to `x`.
+
+    Notes
+    -----
+    
+    Let the initial data points be ``yi = y(xi)``. We then assume that,
+    ``y(x>xi) = A exp(-(x-a)/H)``, where ``A = y(a)`` and ``a = max(xi,xi+1)``.
+    Then, ``y(a) exp(-(b - a)/H) = y(b)``, so rearranging yields ``log( y(b) / y(a) )/(a-b) = 1/H`` 
+    """
+    def __init__(self,x,y,**kwargs):
+        ind=y[:,0]>0
+        self.inner = interp1d(x[ind],np.log(y[ind])
+                        ,kind='linear'
+                        ,axis=0
+        )
+        self.x = x[ind]
+        self.y = y[ind]
+        #print self.x[:-1].shape, self.x.shape
+        #print self.y[:-1].shape, self.y.shape
+        self.top = self.x.max()
+        self.bot = self.x.min()
+        self.ytop = self.y[np.argmax(self.x)]
+        self.ybot = self.y[np.argmin(self.x)]
+        Hs = np.abs(safe_divide((self.x[1:]-self.x[:-1]).reshape(-1,1),safe_log(self.y[1:]/self.y[:-1])))
+        avgs = ( Hs[:5].mean(), Hs[-5:].mean() )
+        if x[0]>x[-1]:
+            self.Htop, self.Hbot = avgs
+        else:
+            self.Hbot, self.Htop = avgs
+        self.Hbot *= -1
+
+    def __call__(self,x):
+        out = [_loginterp(xi
+                ,self.inner
+                ,self.bot, self.top
+                ,self.ybot, self.ytop
+                ,self.Hbot, self.Htop
+        ) for xi in x]
+        #print type(out)
+        #print [np.shape(a) for a in out]
+        return np.asarray(out)
+
+class LogInterpolate( object ):
+    """
+    Interpolate a function y(x) assuming a constant scale height between data points.
+    
+    Parameters
+    ----------
+    x : array
+        Support of the function to be interpolated
+    y : array
+        Function values corresponding to `x`.
+
+    Notes
+    -----
+    
+    Let the initial data points be ``yi = y(xi)``. We then assume that,
+    ``y(x>xi) = A exp(-(x-a)/H)``, where ``A = y(a)`` and ``a = max(xi,xi+1)``.
+    Then, ``y(a) exp(-(b - a)/H) = y(b)``, so rearranging yields ``log( y(b) / y(a) )/(a-b) = 1/H`` 
+    """
+    def __init__(self,x,y,**kwargs):
+        ind=y[:,0]>0
+        self.inner = [ interp1d(x[ind],np.log(y[ind,i])
+                        ,kind='linear'
+                        ,axis=0
+                            ) for i in range(y.shape[1])]
+        self.x = x[ind]
+        self.y = y[ind]
+        #print self.x[:-1].shape, self.x.shape
+        #print self.y[:-1].shape, self.y.shape
+        self.top = self.x.max()
+        self.bot = self.x.min()
+        self.ytop = self.y[np.argmax(self.x)]
+        self.ybot = self.y[np.argmin(self.x)]
+        Hs = np.abs(safe_divide((self.x[1:]-self.x[:-1]).reshape(-1,1),safe_log(self.y[1:]/self.y[:-1])))
+        avgs = ( Hs[:5].mean(), Hs[-5:].mean() )
+        if x[0]>x[-1]:
+            self.Htop, self.Hbot = avgs
+        else:
+            self.Hbot, self.Htop = avgs
+        self.Hbot *= -1
+
+    def __call__(self,x,i):
+        out = [_loginterp(xi
+                         ,self.inner[i]
+                         ,self.bot
+                         ,self.top
+                         ,self.ybot[i]
+                         ,self.ytop[i]
+                         ,self.Hbot
+                         ,self.Htop
+                     ) for xi in x]
+        #print type(out)
+        #print [np.shape(a) for a in out]
+        return np.asarray(out)
+
+class LogInterpolate1D( object ):
+    """
+    Interpolate a function y(x) assuming a constant scale height between data points.
+    
+    Parameters
+    ----------
+    x : array
+        Support of the function to be interpolated
+    y : array
+        Function values corresponding to `x`.
+
+    Notes
+    -----
+    
+    Let the initial data points be ``yi = y(xi)``. We then assume that,
+    ``y(x>xi) = A exp(-(x-a)/H)``, where ``A = y(a)`` and ``a = max(xi,xi+1)``.
+    Then, ``y(a) exp(-(b - a)/H) = y(b)``, so rearranging yields ``log( y(b) / y(a) )/(a-b) = 1/H`` 
+    """
+    def __init__(self,x,y,**kwargs):
+        ind=y>0
+        self.inner = interp1d(x[ind], np.log(y[ind])
+                              ,kind='linear'
+                              ,axis=0
+        )
+        self.x = x[ind]
+        self.y = y[ind]
+        #print self.x[:-1].shape, self.x.shape
+        #print self.y[:-1].shape, self.y.shape
+        self.top = self.x.max()
+        self.bot = self.x.min()
+        self.ytop = self.y[np.argmax(self.x)]
+        self.ybot = self.y[np.argmin(self.x)]
+        Hs = np.abs(safe_divide((self.x[1:]-self.x[:-1]),safe_log(self.y[1:]/self.y[:-1])))
+        avgs = ( Hs[:5].mean(), Hs[-5:].mean() )
+        if x[0]>x[-1]:
+            self.Htop, self.Hbot = avgs
+        else:
+            self.Hbot, self.Htop = avgs
+        self.Hbot *= -1
+
+    def __call__(self,x):
+        out = _loginterp(x
+                         ,self.inner
+                         ,self.bot
+                         ,self.top
+                         ,self.ybot
+                         ,self.ytop
+                         ,self.Hbot
+                         ,self.Htop
+        )
+        #print type(out)
+        #print [np.shape(a) for a in out]
+        return np.asarray(out)
+
+
+@np.vectorize
+def _loginterp(x,f,b,t,yb,yt,Hb,Ht):
+    if x<b:
+        interpolated = yb*np.exp(-(x-b)/Hb)
+    elif x<t:
+        interpolated = np.exp(f(x))
+    else:
+        interpolated = yt*np.exp(-(x-t)/Ht)
+    return interpolated
+
+@np.vectorize
+def safe_divide(x,y):
+    """
+    Maybe divide x/y.
+    """
+    if y!=0:
+        return x/y
+    else:
+        return np.nan
+
+@np.vectorize
+def safe_log(x):
+    """
+    Maybe Log(x).
+    """
+    if x>0:
+        return np.log(x)
+    elif x==0:
+        return -np.inf
+    else:
+        return np.nan
+
+if __name__ == "__main__":
+    print(__name__)
+    x = np.random.random(100)
+    x.sort()
+    y = np.random.random(100)
+    f = interp1d(x,y)
+    Y=_loginterp(x,f,x.min(),x.max(),y.min(),y.max(),1,1)
+    print(Y)
+
