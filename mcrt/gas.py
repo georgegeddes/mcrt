@@ -74,13 +74,10 @@ class lineshape( object ):
         Line center frequency.
     std : float
         Standard deviation.
-    prof_type : {'doppler'}
-        Type specifier to allow future support of Lorentz and Voight profiles. This is probably the wrong way to do that though.
     """
-    def __init__( self, mean, std, prof_type='doppler' ):
+    def __init__( self, mean, std ):
         self.mean = mean
         self.std  = std
-        self.prof_type = prof_type
 
     @property
     def cdf( self ):
