@@ -49,7 +49,7 @@ def TestAtmosphere(N_angles = 2):
     neutrals = auric.retrieve("atmos.dat", n_species + ['Tn (K)'])
     temperatures = neutrals['Tn (K)'] 
     temperatures = temperatures * 1000.0 / np.max(temperatures)
-    absorbers = { k[1:-1]:v for (k,v) in neutrals.iteritems() if '[' in k }
+    absorbers = { k[1:-1]:v for (k,v) in neutrals.items() if '[' in k }
     altitudes = neutrals["ALT"]#np.logspace(0,3,len(neutrals["ALT"]))[::-1]
 
     # O+ setup
