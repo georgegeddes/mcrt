@@ -98,18 +98,20 @@ class Atmosphere( object ):
 
         m_oplus = Gas.species["O+"].mass
         self.tau, self.dtau, self.albedo, self.tau_s, self.lineshape, self.extinction = [],[],[],[],[],[]
-        for L in xrange( self.N_lambda ):
+        for L in range( self.N_lambda ):
             nu = frequency(wavelengths[L])
             ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
             spec = ls.cdf
-            spec_chunks = spec[:,1:] - spec[:,:-1]
-            self.lineshape.append( spec_chunks[:] )
+            spec_chunks = spec[:,1:] - spec[:,:-1] # This piece is not right!
+            spectrum = ls.pdf
+            #spectrum = spec_chunks
+            self.lineshape.append( ls )
 
-            scatter_coeff = np.zeros( ( self.N_layers, spec_chunks.size ), dtype=dt )
+            scatter_coeff = np.zeros( ( self.N_layers, spectrum.size ), dtype=dt )
             absorb_coeff  = np.zeros_like( scatter_coeff, dtype=dt )
             # optical depths -- each of these is a list with an array for each wavelength
-            scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures[:, None] ) * spec_chunks
-            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * np.ones_like(spec_chunks)
+            scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures[:, None] ) * spectrum
+            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * np.ones_like(spectrum)
 
             # minus signs because z is decreasing
             tau_a, tau_s , tau = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
@@ -119,6 +121,10 @@ class Atmosphere( object ):
             gmean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
 
             dtau_a, dtau_s = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
+            # print("gmean_abs shape:", gmean_abs.shape)
+            # print("z shape:",abs(z[:-1]-z[1:])[:,None].shape)
+            # print(np.asarray(z))
+            # print("dtau_a shape:",dtau_a.shape)
             dtau_a[1:,:] = gmean_abs * abs(z[:-1]-z[1:])[:,None]
             dtau_s[1:,:] = gmean_sct * abs(z[:-1]-z[1:])[:,None]
 
@@ -143,7 +149,7 @@ class Atmosphere( object ):
             self.extinction.append(gmean_sct + gmean_abs)
 
         # states for easy indexing later
-        self.transient = [ ( i, n ) for i in xrange(self.N_angles) for n in xrange(self.N_layers) ]
+        self.transient = [ ( i, n ) for i in range(self.N_angles) for n in range(self.N_layers) ]
         self.ergodic   = range( len( viewing_angles ) )
 
         # convenience definitions
@@ -209,7 +215,9 @@ class Atmosphere( object ):
         n = k[1]
         m = l[1]
         # sum is over frequency, for complete frequency redistribution
-        return np.sum( self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ) )
+        integrate = scipy.integrate.trapz
+        x = self.lineshape[wavelength].x
+        return integrate( self.lineshape[wavelength].pdf[n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ), x )
 
     def W( self, n, i, m, wavelength ):
         """Exctinction probability for layer `n` -> `m` along direction `i`"""
@@ -254,7 +262,7 @@ class Atmosphere( object ):
         tau = self.tau[wavelength]
         view_depth = self.view_depth[wavelength]
         view_ind = self.view_ind[wavelength]
-        lineshape = self.lineshape[wavelength]
+        lineshape = self.lineshape[wavelength].pdf
         out = R_matrix(transient_angles,ergodic_angles,ergodic_weights,albedo,tau,view_depth,view_ind,lineshape)
         return out
 
@@ -279,7 +287,7 @@ class Atmosphere( object ):
         lower_weight = (h-lower)/DZ
         view_depth = np.array( [ t[upper_ind,:]*upper_weight + t[lower_ind,:]*lower_weight  for t in self.tau ] )
         # define an index to serve as a proxy for the top of the atmosphere
-        view_ind = [ np.max(np.where(np.sum(self.tau[w],axis=1) > np.sum(view_depth[w]))) for w in xrange(self.N_lambda) ]
+        view_ind = [ np.max(np.where(np.sum(self.tau[w],axis=1) > np.sum(view_depth[w]))) for w in range(self.N_lambda) ]
         self.view_depth = view_depth
         self.view_ind = view_ind
         return self.view_depth
@@ -300,11 +308,11 @@ class Atmosphere( object ):
         # tau_0 = self.tau_0[w]
         # upwelling
         if np.sign(mu_j) == +1:
-            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
+            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w].pdf, self.view_depth[w], self.view_ind[w] ) ]).T
             return  np.sum( arr, axis=1 )
         # downwelling
         elif np.sign(mu_j) == -1:# and n < self.N_layers - 1:
-            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
+            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w].pdf, self.view_depth[w], self.view_ind[w] ) ]).T
             return  np.sum( arr, axis=1 )
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
@@ -356,13 +364,13 @@ def R_matrix(transient_angles,ergodic_angles,ergodic_weights,albedo,tau,view_dep
     # Each element l,e is the probability for a photon emitted in the state l to scatter into the state e
     n = tau.shape[0]
     output = np.zeros((len(transient_angles)*n,len(ergodic_angles)))
-    topside = xrange(0,view_ind)
-    bottomside = xrange(view_ind,n)
+    topside = range(0,view_ind)
+    bottomside = range(view_ind,n)
     topside_depth = abs(tau[topside,:] - view_depth)
     bottomside_depth = abs(tau[bottomside,:] - view_depth) 
     for e, mu_e in enumerate(ergodic_angles):
         weight = ergodic_weights[e]
-        for i in xrange(len(lineshape[0,:])):
+        for i in range(len(lineshape[0,:])):
             for mu_j in transient_angles:
                 # they way that transient is set up, the upwellng angles come first, then downwelling.
                 if np.sign(mu_j) < 0: # upwelling
@@ -416,12 +424,12 @@ def quad_gen_T(mu_j, mu_e, tau, albedo, dtau, ls, view_depth, top ):
     tp = tau
     alb = albedo
     tau_view = top
-    for line_chunk in xrange(N):
+    for line_chunk in range(N):
         max_ind = len(tau)
         data = [0.0]*top
         tau_view = view_depth[line_chunk]
-        for bottom in xrange(top+1,max_ind-1):
-            ind = xrange(top,bottom)
+        for bottom in range(top+1,max_ind-1):
+            ind = range(top,bottom)
             tp = tau[ind,line_chunk]
             alb = albedo[ind,line_chunk]
             I = T_integrand(mu_j, mu_e, tau_view, tp, alb)
@@ -435,12 +443,12 @@ def quad_gen_R(mu_j, mu_e, tau, albedo, dtau, ls, view_depth, top ):
     N = tau.shape[1]
     tp = tau
     alb = albedo
-    for line_chunk in xrange(N):
+    for line_chunk in range(N):
         max_ind = len(tau)
         data = [0.0]*top
         tau_view = view_depth[line_chunk]
-        for bottom in xrange(top+1,max_ind-1):
-            ind = xrange(top,bottom)
+        for bottom in range(top+1,max_ind-1):
+            ind = range(top,bottom)
             tp = tau[ind,line_chunk]
             alb = albedo[ind,line_chunk]
             I = R_integrand(mu_j, mu_e, tau_view, tp, alb)

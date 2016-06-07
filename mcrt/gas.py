@@ -28,7 +28,7 @@ def freq_param( num_freqs=24 ):
     Frequency parameter x = ( nu - nu_0 ) / nu_0.
     """
     # the 1e-6 padding is to prevent division errors in the extinction coefficients
-    return np.array( [ 2.25 * (i + 1e-6) / num_freqs for i in xrange(num_freqs-1) ] + [ np.inf ], dtype=dt ).reshape( 1, num_freqs )
+    return np.array( [ 2.25 * (i + 1e-6) / num_freqs for i in range(num_freqs) ], dtype=dt ).reshape( 1, num_freqs )
 
 def frequency( wavelength ):
     """
@@ -75,15 +75,28 @@ class lineshape( object ):
     std : float
         Standard deviation.
     """
-    def __init__( self, mean, std ):
+    def __init__( self, mean, std, n_freq = 24 ):
         self.mean = mean
         self.std  = std
+        self.n = n_freq
+        self.N = std/np.sqrt(np.pi*2)
 
+    @property
+    def x( self ):
+        """Returns the frequency parameter"""
+        return freq_param( self.n ) / self.std / np.sqrt(2)
+        
     @property
     def cdf( self ):
         """Returns an array of the cdf"""
-        return scipy.special.erf( freq_param() / self.std / np.sqrt(2) )
+        return scipy.special.erf( self.x ) #* self.N * np.pi
 
+    @property
+    def pdf( self ):
+        """Returns an array of the pdf"""
+        f = lambda x: np.exp( -x*x )
+        return f( self.x ) * self.N
+    
 class Gas( object ):
     """
     Contains physical properties pertaining to a single gas species.    
