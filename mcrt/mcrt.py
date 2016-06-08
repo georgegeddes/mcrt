@@ -216,7 +216,7 @@ class Atmosphere( object ):
         m = l[1]
         # sum is over frequency, for complete frequency redistribution
         integrate = scipy.integrate.trapz
-        x = self.lineshape[wavelength].x
+        x = self.lineshape[wavelength].x[n,:]
         return integrate( self.lineshape[wavelength].pdf[n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ), x )
 
     def W( self, n, i, m, wavelength ):
