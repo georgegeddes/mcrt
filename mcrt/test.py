@@ -1,5 +1,6 @@
 from .mcrt import Gas, Atmosphere
-import pyauric
+from .data.testdata import *
+#import pyauric
 import numpy as np
 import os
 
@@ -42,18 +43,24 @@ def TestAtmosphere(N_angles = 2):
     Gas( "O+", 'scattering', [832, 833, 834], sigma_scatter, mO )
 
     # setup and read AURIC stuff
-    auric = pyauric.AURICManager(data_folder)
+    #auric = pyauric.AURICManager(data_folder)
 
     n_species = [ "[O]", "[O2]", "[N2]" ]
 
-    neutrals = auric.retrieve("atmos.dat", n_species + ['Tn (K)'])
+    #neutrals = auric.retrieve("atmos.dat", n_species + ['Tn (K)'])
+    neutrals = {'[O]':np.asarray(nO)
+                , '[O2]':np.asarray(nO2)
+                , '[N2]':np.asarray(nN2)
+                , 'Tn (K)':np.asarray(T)
+                , 'ALT':np.asarray(altitudes_km)}
     temperatures = neutrals['Tn (K)'] 
     temperatures = temperatures * 1000.0 / np.max(temperatures)
     absorbers = { k[1:-1]:v for (k,v) in neutrals.items() if '[' in k }
     altitudes = neutrals["ALT"]#np.logspace(0,3,len(neutrals["ALT"]))[::-1]
 
     # O+ setup
-    oplus = auric.retrieve("ionos.dat", ['[e-]'])
+    #oplus = auric.retrieve("ionos.dat", ['[e-]'])
+    oplus = {'[e-]': np.asarray(ne)} # close enough to start
 
     # two streams:
     angles = np.linspace(0,np.pi,num=N_angles, endpoint=True)
@@ -64,7 +71,30 @@ def TestAtmosphere(N_angles = 2):
 
     return atmosphere
 
-
+def test():
+    atm = TestAtmosphere()
+    M = atm.multiple_scatter_matrix(2)
+    import matplotlib.pyplot as plt
+    # plt.imshow(M, cmap=plt.cm.viridis)
+    # plt.show()
+    Q = (M[:100,:100]+M[100:,:100] + M[:100,100:] + M[100:,100:])/2
+    # plt.imshow(Q)
+    # plt.show()
+    src = np.asarray(oii834A_photoion) + np.asarray(oii834A_e_impact)
+    fin = src.dot(Q)#Q.dot(src) # this is the correct order
+    # fin2= Q.dot(src)
+    aur = oii834A_final
+    plt.figure()
+    plt.plot(altitudes_km,src, label='Source')
+    plt.plot(altitudes_km,fin, label='Markov', ls='', marker = 'x')
+    # plt.plot(altitudes_km,fin2, label='Markov2', ls='', marker = 'x')
+    plt.plot(altitudes_km,aur, label='Featurier')
+    plt.legend()
+    plt.yscale('log')
+    plt.ylim(1e-3,)
+    plt.show()
+    return Q
+    
 
 if __name__=="__main__":
     print(TestAtmosphere())

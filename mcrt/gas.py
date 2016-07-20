@@ -79,12 +79,12 @@ class lineshape( object ):
         self.mean = mean
         self.std  = std
         self.n = n_freq
-        self.N = std/np.sqrt(np.pi*2)
+        self.N = 1/np.sqrt(np.pi)
 
     @property
     def x( self ):
         """Returns the frequency parameter"""
-        return freq_param( self.n ) / self.std / np.sqrt(2)
+        return freq_param( self.n )
         
     @property
     def cdf( self ):
@@ -95,7 +95,7 @@ class lineshape( object ):
     def pdf( self ):
         """Returns an array of the pdf"""
         f = lambda x: np.exp( -x*x )
-        return f( self.x ) * self.N
+        return f( self.x )
     
 class Gas( object ):
     """

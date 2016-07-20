@@ -84,6 +84,10 @@ class Atmosphere( object ):
         self.N_layers = len(altitudes)
         self.N_lambda = len(wavelengths)
 
+        # temperature parameter
+        self.sqrt_temp = np.sqrt(1000/temperatures)
+        # self.sqrt_temp = np.ones_like(temperatures)
+        
         # phase function
         self.P = P        
 
@@ -103,30 +107,36 @@ class Atmosphere( object ):
             ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
             spec = ls.cdf
             spec_chunks = spec[:,1:] - spec[:,:-1] # This piece is not right!
-            spectrum = ls.pdf
+            spectrum = (ls.pdf**(1000/self.temperatures[:,None]))*2/np.sqrt(np.pi)  # Shouldn't this pi be on the bottom?
             #spectrum = spec_chunks
-            self.lineshape.append( ls )
+            self.lineshape.append( spectrum )
+            x = ls.x * self.sqrt_temp[:,None]
+            self.x = x
+            Lx = np.ones_like(x)# * self.x.max() * 2
 
-            scatter_coeff = np.zeros( ( self.N_layers, spectrum.size ), dtype=dt )
+            scatter_coeff = np.zeros( ( self.N_layers, spectrum.shape[-1] ), dtype=dt )
             absorb_coeff  = np.zeros_like( scatter_coeff, dtype=dt )
             # optical depths -- each of these is a list with an array for each wavelength
-            scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * np.sqrt( 1000 / self.temperatures[:, None] ) * spectrum
-            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None] * np.ones_like(spectrum)
+            scatter_coeff = self.oplus[:, None] * Gas.species["O+"].sigma[L] * self.sqrt_temp[:, None] * spectrum
+            absorb_coeff = sum( self.neutrals[ gas.name ] * gas.sigma[L] for gas in Gas.absorbers.values() )[:,None]\
+                           *np.ones_like(spectrum) / Lx
 
             # minus signs because z is decreasing
             tau_a, tau_s , tau = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
 
-            # geometric mean makes for a better estimate, I think. <======= FIGURE OUT IF THIS IS TRUE
-            gmean_abs = np.sqrt( absorb_coeff[:-1,:] * absorb_coeff[1:,:] )
-            gmean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
-
+            # geometric mean makes for a better estimate, I think.
+            # mean_abs = np.sqrt( absorb_coeff[:-1,:] * absorb_coeff[1:,:] )
+            # mean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
+            mean_abs = 0.5 * ( absorb_coeff[1:,:] + absorb_coeff[1:,:] )
+            mean_sct = 0.5 * ( scatter_coeff[1:,:] + scatter_coeff[1:,:] )
+            
             dtau_a, dtau_s = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
             # print("gmean_abs shape:", gmean_abs.shape)
             # print("z shape:",abs(z[:-1]-z[1:])[:,None].shape)
             # print(np.asarray(z))
             # print("dtau_a shape:",dtau_a.shape)
-            dtau_a[1:,:] = gmean_abs * abs(z[:-1]-z[1:])[:,None]
-            dtau_s[1:,:] = gmean_sct * abs(z[:-1]-z[1:])[:,None]
+            dtau_a[1:,:] = mean_abs * abs(z[:-1]-z[1:])[:,None]
+            dtau_s[1:,:] = mean_sct * abs(z[:-1]-z[1:])[:,None]
 
             # initial depths should be taken from infinity
             dtau_a[0,:] = abs((z[0] - z[1]) * absorb_coeff[0,:] / np.log(absorb_coeff[1,:]/absorb_coeff[0,:]))
@@ -143,11 +153,12 @@ class Atmosphere( object ):
             self.dtau.append( dtau )
             
             alb = np.zeros_like( tau )
-            alb[:-1] = gmean_sct / ( gmean_sct + gmean_abs )
+            alb[:-1] = mean_sct / ( mean_sct + mean_abs )
             self.albedo.append( alb )
 
-            self.extinction.append(gmean_sct + gmean_abs)
+            self.extinction.append(mean_sct + mean_abs)
 
+        
         # states for easy indexing later
         self.transient = [ ( i, n ) for i in range(self.N_angles) for n in range(self.N_layers) ]
         self.ergodic   = range( len( viewing_angles ) )
@@ -155,7 +166,7 @@ class Atmosphere( object ):
         # convenience definitions
         self.tau_0 = [ t[-1,:] for t in self.tau ]
 
-    def multiple_scatter_matrix( self, wavelength, view_height=None ):
+    def multiple_scatter_matrix( self, wavelength, view_height=None, coeff=1 ):
         """
         The multiple scattering matrix maps the initial distribution of instensity to the final, scattered distribution.
         
@@ -174,9 +185,13 @@ class Atmosphere( object ):
         n = len(self.transient)
         r = len(self.ergodic  )
         I = np.eye( n )
-        Q = np.fromiter( ( self.Q( k, l, wavelength ) for k in self.transient for l in self.transient ), dtype=dt )
+        Q = np.fromiter( ( self.Q( k, l, wavelength, coeff ) for k in self.transient for l in self.transient ), dtype=dt )
         Q = Q.reshape( ( n, n ) )
 
+        #!!!!!!!!!!!!!!!!!CHANGE
+        return Q
+        #!!!!!!!!!!!!!!!!!CHANGE
+        
         if not view_height: 
             return np.linalg.inv( I -  Q ) # multiple scattering matrix, slow to calculate
 
@@ -190,7 +205,7 @@ class Atmosphere( object ):
 
         return X
 
-    def Q( self, k, l, wavelength ):
+    def Q( self, k, l, wavelength, coeff=1 ):
         """
         Transition probability for transient state `k` -> transient state `l`
         
@@ -215,10 +230,49 @@ class Atmosphere( object ):
         n = k[1]
         m = l[1]
         # sum is over frequency, for complete frequency redistribution
-        integrate = scipy.integrate.trapz
-        x = self.lineshape[wavelength].x[n,:]
-        return integrate( self.lineshape[wavelength].pdf[n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ), x )
+        integrate = scipy.integrate.simps
+        x = self.x[n,:]
+        return 2 * integrate( self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ), x ) # 
 
+
+    def Q2( self, k, l, wavelength ):
+        """
+        Transition probability for transient state `k` -> transient state `l`
+        
+        Parameters
+        ----------
+        k : int
+            Index of the incoming photon's state.
+        l : int
+            Index of the scattered photon's state.
+        wavelength : int
+            Index of the desired wavelength.
+
+        Returns
+        -------
+        float
+            An element of the transition matrix.
+        """
+        # angles
+        i = k[0]
+        j = l[0]
+        # layers
+        n = k[1]
+        m = l[1]
+        # Set up coeffs for scattering probability
+        if m == self.N_layers-1:
+            return 0
+        w0 = self.albedo[wavelength][m]
+        w1 = self.albedo[wavelength][m+1]
+        D = self.z[m+1] - self.z[m]
+        a = w0 - (w1-w0)*self.z[m]/D
+        b = (w1-w0)/D
+        # sum is over frequency, for complete frequency redistribution
+        integrate = scipy.integrate.simps
+        x = self.x[n,:]
+        return integrate( (self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * a + b) * \
+                          self.P( self.mu[i], self.mu[j] ) * self.leg_weights[i], x )*2
+    
     def W( self, n, i, m, wavelength ):
         """Exctinction probability for layer `n` -> `m` along direction `i`"""
         w = wavelength
@@ -226,6 +280,9 @@ class Atmosphere( object ):
         dtau_n  = self.dtau[w][n]
         dtau_m  = self.dtau[w][m]
         c = self.leg_weights[i]
+        # topside case
+        if n == 0:
+            return np.zeros_like(dtau_n)
         # upwelling
         if n > m:
             if np.sign( mu_i ) == -1: return 0
@@ -251,7 +308,7 @@ class Atmosphere( object ):
 
     def Ms( self, i, j, n, wavelength ):
         """Scattering probability for `i` -> `j` in layer `n`"""
-        return self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] ) * self.leg_weights[i] 
+        return np.power(self.albedo[wavelength][n] * self.P( self.mu[i], self.mu[j] ) * self.leg_weights[i], 1.0 )
 
     def R(self, wavelength, view_height):
         self.calculate_view_depth(view_height)
@@ -262,7 +319,7 @@ class Atmosphere( object ):
         tau = self.tau[wavelength]
         view_depth = self.view_depth[wavelength]
         view_ind = self.view_ind[wavelength]
-        lineshape = self.lineshape[wavelength].pdf
+        lineshape = self.lineshape[wavelength]
         out = R_matrix(transient_angles,ergodic_angles,ergodic_weights,albedo,tau,view_depth,view_ind,lineshape)
         return out
 
@@ -308,11 +365,11 @@ class Atmosphere( object ):
         # tau_0 = self.tau_0[w]
         # upwelling
         if np.sign(mu_j) == +1:
-            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w].pdf, self.view_depth[w], self.view_ind[w] ) ]).T
+            arr = np.vstack([ a  for a in quad_gen_T( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
             return  np.sum( arr, axis=1 )
         # downwelling
         elif np.sign(mu_j) == -1:# and n < self.N_layers - 1:
-            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w].pdf, self.view_depth[w], self.view_ind[w] ) ]).T
+            arr = np.vstack([ a  for a in quad_gen_R( mu_j, mu_e, tau, albedo, dtau, self.lineshape[w], self.view_depth[w], self.view_ind[w] ) ]).T
             return  np.sum( arr, axis=1 )
         else: 
             return 0.0 # assume no surface reflection for now, since this shouldn't matter for 834
@@ -326,7 +383,7 @@ def P( mu_i, mu_j ):
     float
         1 / 2
     """
-    weight = 1 # ONLY FOR TWO-STREAM
+    weight = 1 
     return weight / 2 # 1 / 4 / np.pi
 
 def R1( mu_j, mu_e, tau, tau_prime, albedo, tau_ref=0):
@@ -463,7 +520,7 @@ def best_angles(angles):
     a, b = min(angles), max(angles)
     x, w = np.polynomial.legendre.leggauss(len(angles))
     y = ( x * (b-a) + (b+a) )/2.0
-    return y, w
+    return y, w/2
 
 def ver_to_inten(volume_emission_rate, extinction_coefficient):
     intensity = volume_emission_rate / extinction_coefficient / 4.0 / np.pi
