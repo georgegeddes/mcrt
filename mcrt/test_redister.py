@@ -48,15 +48,16 @@ def TestAtmosphere(N_angles = 2):
 
     n_species = [ "[O]", "[O2]", "[N2]" ]
 
-    with open("/home/george/src/redister/834.out",'r') as f:
-        data = frame_data(file_parse(f))
-        print(data['initial_source'].columns)
+    # with open("../data/834.out",'r') as f:
+    #     data = frame_data(file_parse(f))
+    #     print(data['initial_source'].columns)
     #neutrals = auric.retrieve("atmos.dat", n_species + ['Tn (K)'])
-    neutrals = {'[O]':np.asarray(data['atmosphere']['[O]'])
-                , '[O2]':np.asarray(data['atmosphere']['[O2]'])
-                , '[N2]':np.asarray(data['atmosphere']['[N2]'])
-                , 'Tn (K)':np.asarray(data['atmosphere']['T'])
-                , 'ALT':np.asarray(data['atmosphere']['Z']*1e-5)
+    # Data from .data.testdata
+    neutrals = {'[O]':np.asarray(nO)
+                , '[O2]':np.asarray(nO2)
+                , '[N2]':np.asarray(nN2)
+                , 'Tn (K)':np.asarray(T)
+                , 'ALT':np.asarray(altitudes_km)
     }
     temperatures = neutrals['Tn (K)'] 
     temperatures = temperatures * 1000.0 / np.max(temperatures)
@@ -65,7 +66,7 @@ def TestAtmosphere(N_angles = 2):
 
     # O+ setup
     #oplus = auric.retrieve("ionos.dat", ['[e-]'])
-    oplus = {'[e-]': np.asarray(data['atmosphere']['[O+]'])} # close enough to start
+    oplus = {'[e-]': np.asarray(ne)} # close enough to start
 
     # two streams:
     angles = np.linspace(0,np.pi,num=N_angles, endpoint=True)
@@ -74,8 +75,8 @@ def TestAtmosphere(N_angles = 2):
 
     atmosphere = Atmosphere( altitudes, angles, temperatures, absorbers, oplus['[e-]'], viewing_angles )
 
-    atmosphere.src = np.asarray(data['initial_source']['sum'])
-    atmosphere.fin = np.asarray(data['final_source']['sum'])
+    atmosphere.src = np.asarray(oii834A_photoion)+np.asarray(oii834A_e_impact)
+    atmosphere.fin = np.asarray(oii834A_final)
     return atmosphere
 
 def test_many():
