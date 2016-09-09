@@ -158,3 +158,42 @@ def integrate_spectrum_along_z(func,a,b,err=False):
     Take a function that takes a location variable, r, and returns a 1xN array
     """
     i = int(err)
+
+
+
+class HolsteinTransmissionBase:
+    normalization = 1/np.sqrt(np.pi)
+    def __init__(self,lineshape,depth):
+        self._ls = lineshape
+        self._od = depth
+
+    def __call__(self,r,rp):
+        tau = self._od
+        phi = self._ls
+        def integrand(x):
+            p = phi(x)
+            p * np.exp( -tau(r,rp) * p )
+        out = quad(integrand,-np.inf,np.inf)[0]
+        return out*self.normalization
+
+class VoigtLineshape:
+    self._norm = 1/np.sqrt(np.pi)
+    def __init__(self,a):
+        self.a = a
+
+    def __call__(self,x):
+        a = self.a
+        N = a*self._norm
+        def integrand(y):
+            return np.exp(-y*y)/((x-y)**2 + a*a)
+        out = quad(integrand,-np.inf,np.inf)[0]
+        return out
+
+class OpticalDepthDifference:
+    def __init__(self,tau_of_z):
+        self.tau = tau_of_z
+
+    def __call__(self,r,rp):
+        x,y,z = r
+        xp,yp,zp = rp
+        pass
