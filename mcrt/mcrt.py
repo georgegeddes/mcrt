@@ -107,12 +107,12 @@ class Atmosphere( object ):
             ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
             spec = ls.cdf
             spec_chunks = spec[:,1:] - spec[:,:-1] # This piece is not right!
-            spectrum = (ls.pdf**(1000/self.temperatures[:,None]))*2/np.sqrt(np.pi)  # Shouldn't this pi be on the bottom?
+            spectrum = (ls.pdf**(1000/self.temperatures[:,None]))*2/((np.pi)**1.5)  # Shouldn't this pi be on the bottom?
             #spectrum = spec_chunks
             self.lineshape.append( spectrum )
             x = ls.x * self.sqrt_temp[:,None]
             self.x = x
-            Lx = np.ones_like(x)# * self.x.max() * 2
+            Lx = np.ones_like(x)
 
             scatter_coeff = np.zeros( ( self.N_layers, spectrum.shape[-1] ), dtype=dt )
             absorb_coeff  = np.zeros_like( scatter_coeff, dtype=dt )
@@ -127,8 +127,8 @@ class Atmosphere( object ):
             # geometric mean makes for a better estimate, I think.
             # mean_abs = np.sqrt( absorb_coeff[:-1,:] * absorb_coeff[1:,:] )
             # mean_sct = np.sqrt( scatter_coeff[:-1,:] * scatter_coeff[1:,:] )
-            mean_abs = 0.5 * ( absorb_coeff[1:,:] + absorb_coeff[1:,:] )
-            mean_sct = 0.5 * ( scatter_coeff[1:,:] + scatter_coeff[1:,:] )
+            mean_abs = 0.5 * ( absorb_coeff[:-1,:] + absorb_coeff[1:,:] )
+            mean_sct = 0.5 * ( scatter_coeff[:-1,:] + scatter_coeff[1:,:] )
             
             dtau_a, dtau_s = np.zeros_like(scatter_coeff), np.zeros_like(scatter_coeff)
             # print("gmean_abs shape:", gmean_abs.shape)
@@ -230,12 +230,14 @@ class Atmosphere( object ):
         n = k[1]
         m = l[1]
         # sum is over frequency, for complete frequency redistribution
-        integrate = scipy.integrate.simps
+        integrate = scipy.integrate.trapz
         x = self.x[n,:]
-        return 2 * integrate( self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * self.Ms( i, j, m, wavelength ), x ) # 
+        return ((np.pi)**1.5) * integrate( self.lineshape[wavelength][n,:]
+                              * self.W( n, i, m, wavelength )
+                              * self.Ms( i, j, m, wavelength ), x ) 
 
 
-    def Q2( self, k, l, wavelength ):
+    def Q2( self, k, l, wavelength, *args,**kwargs ):
         """
         Transition probability for transient state `k` -> transient state `l`
         
@@ -270,8 +272,10 @@ class Atmosphere( object ):
         # sum is over frequency, for complete frequency redistribution
         integrate = scipy.integrate.simps
         x = self.x[n,:]
-        return integrate( (self.lineshape[wavelength][n,:] * self.W( n, i, m, wavelength ) * a + b) * \
-                          self.P( self.mu[i], self.mu[j] ) * self.leg_weights[i], x )*2
+        return integrate( (self.lineshape[wavelength][n,:]
+                           * self.W( n, i, m, wavelength ) * a + b)
+                          * self.P( self.mu[i], self.mu[j] )
+                          * self.leg_weights[i], x )*2
     
     def W( self, n, i, m, wavelength ):
         """Exctinction probability for layer `n` -> `m` along direction `i`"""

@@ -9,7 +9,7 @@ kB = 1.3806488e-23 # J / K
 # speed of light
 c = 2.99792458e8 # m / s
 
-def freq_param( num_freqs=24 ):
+def freq_param( num_freqs ):
     """
     Return a set of dimensionless chunks with equal gaussian weight.
 
@@ -28,7 +28,7 @@ def freq_param( num_freqs=24 ):
     Frequency parameter x = ( nu - nu_0 ) / nu_0.
     """
     # the 1e-6 padding is to prevent division errors in the extinction coefficients
-    return np.array( [ 2.25 * (i + 1e-6) / num_freqs for i in range(num_freqs) ], dtype=dt ).reshape( 1, num_freqs )
+    return np.array( [ 3 * (i + 1e-6) / num_freqs for i in range(num_freqs) ], dtype=dt ).reshape( 1, num_freqs )
 
 def frequency( wavelength ):
     """
@@ -75,7 +75,7 @@ class lineshape( object ):
     std : float
         Standard deviation.
     """
-    def __init__( self, mean, std, n_freq = 24 ):
+    def __init__( self, mean, std, n_freq = 100 ):
         self.mean = mean
         self.std  = std
         self.n = n_freq
