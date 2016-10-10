@@ -9,6 +9,9 @@ kB = 1.3806488e-23 # J / K
 # speed of light
 c = 2.99792458e8 # m / s
 
+# atomic mass unit
+amu = 1.660538921e-27
+
 def freq_param( num_freqs ):
     """
     Return a set of dimensionless chunks with equal gaussian weight.
@@ -80,11 +83,14 @@ class lineshape( object ):
         self.std  = std
         self.n = n_freq
         self.N = 1/np.sqrt(np.pi)
+        x = freq_param( self.n )
+        self._x = x
+        self._pdf = np.exp( -x*x )
 
     @property
     def x( self ):
         """Returns the frequency parameter"""
-        return freq_param( self.n )
+        return self._x
         
     @property
     def cdf( self ):
@@ -94,8 +100,7 @@ class lineshape( object ):
     @property
     def pdf( self ):
         """Returns an array of the pdf"""
-        f = lambda x: np.exp( -x*x )
-        return f( self.x )
+        return self._pdf
     
 class Gas( object ):
     """
