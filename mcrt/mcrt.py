@@ -5,6 +5,11 @@ from .gas import Gas, lineshape, sdu, frequency, freq_param, kB, c
 
 dt = np.float
 
+# a magic number to make the normalization work:
+NNN = 0.997672855272557
+
+_integrate = scipy.integrate.trapz
+
 class Atmosphere( object ):
     """
     Contains atmospheric properties and methods for radiative transport calculations.
@@ -107,10 +112,14 @@ class Atmosphere( object ):
             ls = lineshape( nu, nu*sdu( m_oplus, self.temperatures[:,None] ) ) 
             spec = ls.cdf
             spec_chunks = spec[:,1:] - spec[:,:-1] # This piece is not right!
-            spectrum = (ls.pdf**(1000/self.temperatures[:,None]))*2/((np.pi)**1.5)  # Shouldn't this pi be on the bottom?
+            spectrum = (ls.pdf**np.ones_like(1000/self.temperatures[:,None])) # Shouldn't this pi be on the bottom?
+            spectrum *= 2/np.sqrt(np.pi) # THIS IS THE RIGHT NORMALITZATION!!!!
+            x = ls.x * np.ones_like(self.sqrt_temp[:,None]) #!!!!
+            #lsnorm = _integrate(spectrum,x,axis=0)
+            # spectrum /= lsnorm
+            # print(lsnorm)
             #spectrum = spec_chunks
             self.lineshape.append( spectrum )
-            x = ls.x * self.sqrt_temp[:,None]
             self.x = x
             Lx = np.ones_like(x)
 
@@ -230,9 +239,9 @@ class Atmosphere( object ):
         n = k[1]
         m = l[1]
         # sum is over frequency, for complete frequency redistribution
-        integrate = scipy.integrate.trapz
+        integrate = _integrate
         x = self.x[n,:]
-        return ((np.pi)**1.5) * integrate( self.lineshape[wavelength][n,:]
+        return 2 * integrate( self.lineshape[wavelength][n,:]
                               * self.W( n, i, m, wavelength )
                               * self.Ms( i, j, m, wavelength ), x ) 
 
